@@ -1,122 +1,96 @@
-# mirs_coverage 設計書
+# coverage 設計書 (opennav_coverage版 v0.2.0)
 
 ## 1. 背景と目的
 
 `ble_server` がBLE経由で受信した清掃範囲JSONは、ROS 2トピック
 `/cleaning_zone` (`geometry_msgs/PolygonStamped`, `frame_id=map`) に配信される
-(4点の座標、自己交差なし・面積検証済み)。
-本パッケージは、この4点で囲まれた区間をすべて走行するための
-Nav2ビヘイビアツリー(BT)で使える形への変換を担う。
+(自己交差なし・面積検証済みの多角形)。
+本パッケージは、この多角形をNav2の完全カバレージ機能
+([opennav_coverage](https://github.com/open-navigation/opennav_coverage),
+Fields2Coverベース) に引き渡す。
 
-要件:
+旧来の自作boustrophedon生成 (`coverage_planner.py`/`coverage_executor.py`) は
+v0.2.0で削除した。理由:
 
-- 送られてきた4点の座標内の区間をすべて走行する
-- 座標の点とコストマップを合わせ、走行できないところは避ける
+- swath・旋回・headland・迂回路の生成は既存ライブラリが遥かに堅牢
+- コストマップ連携・リカバリを自前で持つ必要がなくなる
+- Nav2のlifecycle/BTの枠組みに乗れる
 
-## 2. 方針: カスタムBTプラグインは作らない
-
-`mirs` の `nav2_params.yaml` が使うBTは素のNav2プラグインのみで構成され、
-C++製BTノードの追加はビルド・運用コストが高い。
-「4点内を全部走行 + 走行不可はスキップ」は、**ウェイポイント列の生成時に
-解決できる**ため、BT実行時の分岐は不要と判断した。
-
-既存の `NavigateThroughPoses` アクションと標準BT
-(`navigate_through_poses_w_replanning_and_recovery.xml`) の
-リプラン・クリアコストマップ・スピン等のリカバリに丸投げする。
-
-## 3. アーキテクチャ
+## 2. アーキテクチャ
 
 ```
 [Flutter] --BLE(JSON)--> [ble_receiver_node] --/cleaning_zone-->
-  --> [coverage_executor] --/coverage/path(Path)-->
-  --> [coverage_executor] --NavigateThroughPoses--> [Nav2]
-       参照: /global_costmap/costmap, /map, tf(map->base_footprint)
-       進捗: /coverage/state (IDLE/WAITING_COSTMAP/EXECUTING/DONE/FAILED_*)
+  --> [coverage_bridge] --NavigateCompleteCoverage--> [bt_navigator/CoverageNavigator]
+        --ComputeCoveragePath--> [coverage_server] --nav_path--> FollowPath --> DWB
 ```
 
 - `ble_server`: 無改修。前段の検証済み出力をそのまま使う
-- `mirs_coverage/coverage_planner.py`: ROS非依存の純粋関数。ホストpytestで検証可能
-- `mirs_coverage/coverage_executor.py`: ROSノード。購読・Path公開・アクション投入に徹する
-- BT・Nav2パラメータ・アプリ側の変更は不要
+- `coverage/zone_field.py`: ROS非依存の純粋関数(検証・正規化)。pytest対象
+- `coverage/coverage_bridge.py`: ROSノード。購読・ゴール投入・状態通知に徹する
+- `opennav_coverage/coverage_server`: Nav2 Task Server。swath/route/path生成
+- `opennav_coverage_navigator/CoverageNavigator`: bt_navigatorプラグイン。
+  `navigate_complete_coverage` アクションを公開する
+- BT XMLは純正デフォルト
+  (`opennav_coverage_bt/behavior_trees/navigate_w_basic_complete_coverage.xml`)
+  を使う。本パッケージ独自のBTは持たない
 
-## 4. カバレッジ生成 (planner)
-
-1. ポリゴン正規化 (`normalize_order`): 頂点を重心周りの偏角でソートし巻き順を統一。
-   アプリ側の送信順序に依存しない。凹多角形にも破綻しない
-2. 走査線カバレッジ (`generate_boustrophedon`): Y方向バウンディングボックスに
-   `spacing` 間隔(既定 `0.35m` = footprint 0.5m - オーバーラップ)で水平走査線を敷き、
-   多角形との交差区間の端点ペアを往復(boustrophedon)で連結。yawは進行方向(±X)
-3. 補間 (`interpolate_waypoints`): 端点間を `resolution` (既定 `0.1m`) で直線補間し、
-   コスト判定用の密な候補点列にする
-
-最小面積外接矩形の厳密解は使わない。4点の清掃範囲では水平スキャン近似で十分であり、
-凹四角形にも対応できるためである。
-
-## 5. コストマップ連携 (走行不可は避ける)
-
-`/global_costmap/costmap` (`nav_msgs/OccupancyGrid`, resolution 0.05)を購読し、
-候補点を1点ずつ判定する (`filter_by_cost`):
-
-- 除外条件: `cost >= lethal_cost` (既定80)、`cost == -1 (unknown)` は除外
-  (`allow_unknown=false` 相当。plannerの `allow_unknown:true` より安全側に倒す)
-- 範囲外セルもunknown扱いで除外
-- 残った連続区間のみウェイポイント化。`min_segment_length` (既定0.5m) 未満の
-  短区間・孤立点は捨てる。上限 `max_waypoints` (既定100) で打ち切る
-- 各ウェイポイントはNavfn `tolerance: 0.5` の範囲で到達可能なため、
-  そのまま `NavigateThroughPoses` に投げられる
-
-動的障害物はNav2側 (local_costmap + DWB + リカバリBT) が吸収する。
-全点除外の場合はロボットを動かさず `FAILED_UNREACHABLE` を通知する。
-
-## 6. BTでの使い方
-
-当面はBT改修なし。executorが `NavigateThroughPoses` アクションクライアントに
-なるだけである。
-
-将来BTに組み込みたい場合のみ、既存XMLをコピーした `coverage_bt.xml` を作り、
-`bt_navigator` の `default_nav_through_poses_bt_xml` に差す
-(カスタムノード不要。既存 `ComputePathThroughPoses` + `FollowPath` で表現可能)。
-
-起動は `nav.launch.py` への1ノード追加か、別launch:
-
-```bash
-ros2 launch mirs_coverage coverage.launch.py
-```
-
-## 7. I/F・可観測性
+## 3. I/F・可観測性
 
 | 方向 | 名前 | 型・備考 |
 |-----|------|---------|
 | 購読 | `/cleaning_zone` | `PolygonStamped`, QoS 10 |
-| 購読 | `/global_costmap/costmap` | `OccupancyGrid` |
-| 公開 | `/coverage/path` | `nav_msgs/Path`, RViz確認用 |
-| 公開 | `/coverage/state` | `std_msgs/String` (`EXECUTING n=..` / `DONE` / `FAILED_*`) |
-| 送出 | `navigate_through_poses` | `nav2_msgs/NavigateThroughPoses` |
+| 公開 | `/coverage/state` | `std_msgs/String` (`EXECUTING` / `DONE` / `CANCELED` / `FAILED_*` / `WAITING_*`) |
+| 送出 | `navigate_complete_coverage` | `opennav_coverage_msgs/NavigateCompleteCoverage` |
+| 可視化 | `/coverage_server/coverage_plan` | `nav_msgs/Path` (RViz緑) |
+| 可視化 | `/coverage_server/field_boundary` | `PolygonStamped` (RViz緑) |
+| 可視化 | `/coverage_server/swaths` | `Marker/LINE_LIST` (RViz青) |
 
-新規 `/cleaning_zone` 受信で実行中ゴールはキャンセル→再計画(プリエンプト)する想定。
-RVizでは `/cleaning_zone` をPolygon表示し、`/coverage/path` を重ねるとデバッグしやすい。
+新規 `/cleaning_zone` 受信で実行中ゴールはキャンセル→再投入(プリエンプト)する。
+Nav2に拒否され続けた場合は `retry_limit` (既定3回) で諦め、
+`FAILED_REJECTED` を通知する。
 
-## 8. パラメータ
+## 4. パラメータ
+
+bridge (`coverage_bridge`):
 
 | パラメータ | 既定値 | 意味 |
 |-----------|-------|------|
 | `zone_topic` | `/cleaning_zone` | 入力ポリゴン |
-| `costmap_topic` | `/global_costmap/costmap` | 参照コストマップ |
-| `spacing` | `0.35` | 走査線間隔 [m] |
-| `resolution` | `0.1` | 補間分解能 [m] |
-| `lethal_cost` | `80` | 走行不可コスト閾値 |
-| `frame_id` | `map` | JSONにframe_idが無い場合の代替 |
+| `state_topic` | `/coverage/state` | 状態通知 |
+| `action_name` | `navigate_complete_coverage` | CoverageNavigator |
+| `frame_id` | `map` | ゾーンにframe_idが無い場合の代替 |
+| `behavior_tree` | `""` | BT上書き(空=純正デフォルト) |
+| `nav_timeout_sec` | `5.0` | アクションサーバ待ち |
+| `retry_limit` | `3` | 拒否の上限 |
+| `backoff_sec` | `5.0` | 再送間隔 |
 
-## 9. エッジケース
+coverage_server (`mirs/.../nav2_params.yaml` の `coverage_server` 節が単一真実):
 
-- 全点除外 → `FAILED_UNREACHABLE` をログ+通知し、ロボットは動かさない
-- ポリゴンがマップ外/unknownだらけ → 同上(壁に突っ込まない)
-- 凹四角形 → スキャンライン法は凹対応のため問題なし
-- Nav2サーバ不在 → `FAILED_NO_SERVER`、ゴール拒否 → `FAILED_REJECTED`
+| パラメータ | 既定値 | 意味 |
+|-----------|-------|------|
+| `coordinates_in_cartesian_frame` | `true` | 屋内なので直交座標 |
+| `robot_width` | `0.5` | 車体幅(footprint 0.5m) |
+| `operation_width` | `0.35` | 清掃幅(旧spacing相当) |
+| `min_turning_radius` | `0.2` | 最小旋回半径 |
+| `default_headland_width` | `0.0` | 壁際まで清掃(除外幅なし) |
+| `default_route_type` | `BOUSTROPHEDON` | 往復 |
+| `default_swath_angle_type` | `BRUTE_FORCE` | 任意四角形に対応 |
 
-## 10. 実装順 (本パッケージの現状)
+## 5. エッジケース
 
-1. [x] `coverage_planner.py` 純粋関数 + 単体テスト
-2. [x] `coverage_executor.py` (購読・Path公開・アクション投入) + `coverage.launch.py`
-3. [ ] RVizでの目視確認 (`/cleaning_zone` + `/coverage/path`)
-4. [ ] 実機走行 (`ros2 topic echo /cleaning_zone` → `/coverage/path` → 実走)
+- 頂点数不足・非有限値 → ロボットを動かさず `FAILED_INVALID_ZONE`
+- Nav2サーバ不在 → `WAITING_NAV_SERVER` で待機(1秒周期再試行)
+- ゴール拒否 → `WAITING_NAV_RETRY n/3`、上限で `FAILED_REJECTED`
+- 非凸多角形: 上流Fields2Coverの制約。凸四角形(BLE仕様)を想定
+
+## 6. 依存の導入 (コンテナ内)
+
+```bash
+# Fields2Coverバイナリ (opennav_coverage jazzy-v2 はF2C v2.0.0)
+sudo apt update && sudo apt install -y ros-jazzy-fields2cover
+# opennav_coverage をソース導入
+cd /home/developer/ws  # ワークスペース直下=srcの親
+git clone -b jazzy-v2 https://github.com/open-navigation/opennav_coverage.git src/opennav_coverage
+rosdep install --from-path src --ignore-src -r -y  # 別名 ri
+colcon build --symlink-install
+```
