@@ -118,8 +118,10 @@ class CoverageBridge(Node):
 
     # --- 購読・再試行 ---
     def _on_zone(self, msg: PolygonStamped) -> None:
+        min_vertices = self._int_param('min_vertices', 3)
         try:
-            normalize_zone([(p.x, p.y) for p in msg.polygon.points])
+            normalize_zone([(p.x, p.y) for p in msg.polygon.points],
+                           min_vertices=min_vertices)
         except ValueError as e:
             self.get_logger().error(f'不正なゾーンのため無視します: {e}')
             self._publish_state('FAILED_INVALID_ZONE')
