@@ -1,5 +1,7 @@
-# mirs_coverage 用 RViz 設定: 清掃範囲(/cleaning_zone)とカバレッジ経路(/coverage/path)の確認用。
-# nav2_bringup の nav2_default_view.rviz を基にした最小構成。mirs パッケージには依存しない。
+# coverage 用 RViz 設定 (opennav_coverage版)。
+# 地図・Global Costmap・LaserScan・清掃範囲(/cleaning_zone)・
+# カバレッジ計画(/coverage_server/coverage_plan, /coverage_server/swaths,
+# /coverage_server/field_boundary)・Nav2計画(/plan)を確認する。
 Panels:
   - Class: rviz_common/Displays
     Help Height: 0
@@ -146,6 +148,19 @@ Visualization Manager:
         Value: /cleaning_zone
       Value: true
     - Alpha: 1
+      Class: rviz_default_plugins/Polygon
+      Color: 25; 255; 0
+      Enabled: true
+      Name: CoverageField
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /coverage_server/field_boundary
+      Value: true
+    - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
       Color: 0; 255; 0
@@ -155,7 +170,7 @@ Visualization Manager:
       Length: 0.30000001192092896
       Line Style: Lines
       Line Width: 0.05000000074505806
-      Name: CoveragePath
+      Name: CoveragePlan
       Offset:
         X: 0
         Y: 0
@@ -171,7 +186,20 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /coverage/path
+        Value: /coverage_server/coverage_plan
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: CoverageSwaths
+      Namespaces:
+        "": true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /coverage_server/swaths
       Value: true
     - Alpha: 1
       Buffer Length: 1
@@ -228,6 +256,7 @@ Visualization Manager:
       Topic:
         Depth: 5
         Durability Policy: Volatile
+        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /clicked_point
