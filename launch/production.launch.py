@@ -62,6 +62,8 @@ def generate_launch_description():
         _arg('enable_coverage_server', 'true', 'Start opennav_coverage server'),
         _arg('enable_ble', 'true', 'Start ble_receiver_node (falseで手動テスト用)'),
         _arg('enable_bridge', 'true', 'Start coverage_bridge'),
+        _arg('enable_ekf_local', 'true', 'EKF odom->base_footprint (off時はstatic TFで代用可)'),
+        _arg('enable_static_odom_tf', 'false', 'Static odom->base_link (EKFと排他。実機なし試験用)'),
         _arg('autostart', 'true', 'Autostart Nav2 lifecycle'),
         # NOTE: nav2_bringup側が PythonExpression(['not ', slam]) で評価するため
         # 必ず Pythonリテラル形式 'True'/'False' で渡すこと。
@@ -81,7 +83,8 @@ def generate_launch_description():
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'enable_lidar': LaunchConfiguration('enable_lidar'),
             'enable_micro_ros': LaunchConfiguration('enable_micro_ros'),
-            'enable_ekf_local': 'true',
+            'enable_ekf_local': LaunchConfiguration('enable_ekf_local'),
+            'enable_static_odom_tf': LaunchConfiguration('enable_static_odom_tf'),
         }.items(),
         condition=IfCondition(LaunchConfiguration('enable_hardware')),
     )
@@ -100,9 +103,10 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_nav2')),
     )
 
-    # opennav_coverage Task Server。lifecycle_manager_navigationの管理対象
-    # (nav2_params.yaml側のnode_namesに含める)。パラメータは同yamlの
+    # opennav_coverage Task Server。パラメータは nav2_params.yaml の
     # coverage_server節が単一真実。use_sim_timeのみlaunchで上書きする。
+    # NOTE: nav2_bringup側lifecycleは自前の固定リストで管理するため、
+    # coverage_serverは専用managerでactive化する。
     coverage_server = Node(
         package='opennav_coverage',
         executable='opennav_coverage',
@@ -112,6 +116,20 @@ def generate_launch_description():
             nav2_params,
             {'use_sim_time': LaunchConfiguration('use_sim_time')},
         ],
+        condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
+    )
+
+    coverage_lifecycle = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_coverage',
+        output='screen',
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'autostart': True,
+            'node_names': ['coverage_server'],
+            'bond_timeout': 10.0,
+        }],
         condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
     )
 
@@ -161,6 +179,7 @@ def generate_launch_description():
         nav2_bringup,
         LogInfo(msg='[production] starting coverage_server/ble/bridge/rviz...'),
         coverage_server,
+        coverage_lifecycle,
         ble_receiver,
         bridge,
         rviz,

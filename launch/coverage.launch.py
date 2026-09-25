@@ -52,7 +52,18 @@ def generate_launch_description():
                 nav2_params,
                 {'use_sim_time': LaunchConfiguration('use_sim_time')},
             ],
-            condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
+        ),
+        Node(
+            package='nav2_lifecycle_manager',
+            executable='lifecycle_manager',
+            name='lifecycle_manager_coverage',
+            output='screen',
+            parameters=[{
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'autostart': True,
+                'node_names': ['coverage_server'],
+                'bond_timeout': 10.0,
+            }],
         ),
         Node(
             package='coverage',
