@@ -25,7 +25,7 @@ coverage/
 
 ```bash
 cd ~/ws  # srcの親ディレクトリ
-vcs import src < src/coverage/dependencies.repos
+git clone -b jazzy-v2 https://github.com/open-navigation/opennav_coverage.git src/opennav_coverage
 rosdep install --from-path src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash

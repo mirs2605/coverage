@@ -87,10 +87,7 @@ coverage_server (`mirs/.../nav2_params.yaml` の `coverage_server` 節が単一�
 
 ```bash
 cd ~/ws  # srcの親ディレクトリ
-# 1. ソース依存の取得 (rosdepはバイナリのみ。未リリース品はvcsで取る)
-vcs import src < src/coverage/dependencies.repos
-# 2. バイナリ依存の解決 (fields2cover等はopennav_coverageのpackage.xml
-#    から自動解決される。個別apt不要)
+git clone -b jazzy-v2 https://github.com/open-navigation/opennav_coverage.git src/opennav_coverage
 rosdep install --from-path src --ignore-src -r -y
 colcon build --symlink-install
 ```
