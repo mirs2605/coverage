@@ -3,9 +3,13 @@
 Nav2本体は別途起動済み(またはproduction.launch.pyを使う)想定。
 opennav_coverage単体の動作確認用。
 
+opennav_coverage未導入でもbridge単体で起動できるよう、
+enable_coverage_server:=false でserverを外せる。
+
 起動例:
     ros2 launch coverage coverage.launch.py
     ros2 launch coverage coverage.launch.py use_rviz:=false
+    ros2 launch coverage coverage.launch.py enable_coverage_server:=false
 """
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -31,6 +35,10 @@ def generate_launch_description():
         DeclareLaunchArgument('behavior_tree', default_value=''),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument(
+            'enable_coverage_server', default_value='true',
+            description='Start opennav_coverage server (falseでbridge単体起動)',
+        ),
+        DeclareLaunchArgument(
             'use_rviz', default_value='true',
             description='Whether to start RViz with coverage.rviz',
         ),
@@ -44,6 +52,7 @@ def generate_launch_description():
                 nav2_params,
                 {'use_sim_time': LaunchConfiguration('use_sim_time')},
             ],
+            condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
         ),
         Node(
             package='coverage',
