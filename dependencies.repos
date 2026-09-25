@@ -1,0 +1,10 @@
+# coverage のソース依存 (vcstool用)。
+# rosdepはバイナリ依存のみ解決できるため、未リリースの
+# opennav_coverage自体はここでソース取得する。
+# fields2cover / libgdal-dev は opennav_coverage の package.xml が
+# 宣言しているため rosdep が自動解決する。個別のaptは不要。
+repositories:
+  opennav_coverage:
+    type: git
+    url: https://github.com/open-navigation/opennav_coverage.git
+    version: jazzy-v2
