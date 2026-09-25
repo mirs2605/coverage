@@ -21,11 +21,13 @@ coverage/
 └── README.md
 ```
 
-## 前提 (コンテナ内)
+## 前提 (コンテナ内。Fields2Cover v2構成)
 
 ```bash
 cd ~/ws  # srcの親ディレクトリ
 git clone -b jazzy-v2 https://github.com/open-navigation/opennav_coverage.git src/opennav_coverage
+sudo apt remove -y ros-jazzy-fields2cover  # apt版v1と混同防止
+git clone -b v2.0.0 https://github.com/Fields2Cover/Fields2Cover.git src/Fields2Cover
 rosdep install --from-path src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash

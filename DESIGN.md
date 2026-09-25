@@ -83,11 +83,15 @@ coverage_server (`mirs/.../nav2_params.yaml` の `coverage_server` 節が単一�
 - ゴール拒否 → `WAITING_NAV_RETRY n/3`、上限で `FAILED_REJECTED`
 - 非凸多角形: 上流Fields2Coverの制約。凸四角形(BLE仕様)を想定
 
-## 6. 依存の導入 (コンテナ内)
+## 6. 依存の導入 (コンテナ内。Fields2Cover v2構成)
 
 ```bash
 cd ~/ws  # srcの親ディレクトリ
+# opennav_coverage は jazzy-v2 (F2C v2対応) を使う
 git clone -b jazzy-v2 https://github.com/open-navigation/opennav_coverage.git src/opennav_coverage
+# Fields2Cover v2 はソースビルドする。apt版(v1系)が入っていると混同するので除去
+sudo apt remove -y ros-jazzy-fields2cover
+git clone -b v2.0.0 https://github.com/Fields2Cover/Fields2Cover.git src/Fields2Cover
 rosdep install --from-path src --ignore-src -r -y
 colcon build --symlink-install
 ```
