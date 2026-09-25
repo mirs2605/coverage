@@ -24,9 +24,8 @@ coverage/
 ## 前提 (コンテナ内)
 
 ```bash
-sudo apt update && sudo apt install -y ros-jazzy-fields2cover
-cd <ws>  # srcの親ディレクトリ
-git clone -b jazzy-v2 https://github.com/open-navigation/opennav_coverage.git src/opennav_coverage
+cd ~/ws  # srcの親ディレクトリ
+vcs import src < src/coverage/dependencies.repos
 rosdep install --from-path src --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash

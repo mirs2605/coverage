@@ -86,11 +86,11 @@ coverage_server (`mirs/.../nav2_params.yaml` の `coverage_server` 節が単一�
 ## 6. 依存の導入 (コンテナ内)
 
 ```bash
-# Fields2Coverバイナリ (opennav_coverage jazzy-v2 はF2C v2.0.0)
-sudo apt update && sudo apt install -y ros-jazzy-fields2cover
-# opennav_coverage をソース導入
-cd /home/developer/ws  # ワークスペース直下=srcの親
-git clone -b jazzy-v2 https://github.com/open-navigation/opennav_coverage.git src/opennav_coverage
-rosdep install --from-path src --ignore-src -r -y  # 別名 ri
+cd ~/ws  # srcの親ディレクトリ
+# 1. ソース依存の取得 (rosdepはバイナリのみ。未リリース品はvcsで取る)
+vcs import src < src/coverage/dependencies.repos
+# 2. バイナリ依存の解決 (fields2cover等はopennav_coverageのpackage.xml
+#    から自動解決される。個別apt不要)
+rosdep install --from-path src --ignore-src -r -y
 colcon build --symlink-install
 ```
