@@ -87,11 +87,10 @@ coverage_server (`mirs/.../nav2_params.yaml` の `coverage_server` 節が単一�
 
 ```bash
 cd ~/ws  # srcの親ディレクトリ
-# opennav_coverage は jazzy-v2 (F2C v2対応) を使う
-git clone -b jazzy-v2 https://github.com/open-navigation/opennav_coverage.git src/opennav_coverage
-# Fields2Cover v2 はソースビルドする。apt版(v1系)が入っていると混同するので除去
-sudo apt remove -y ros-jazzy-fields2cover
-git clone -b v2.0.0 https://github.com/Fields2Cover/Fields2Cover.git src/Fields2Cover
-rosdep install --from-path src --ignore-src -r -y
-colcon build --symlink-install
+bash src/coverage/tools/fetch-deps.sh
+source install/setup.bash
 ```
+
+スクリプトは未存在分だけ `git clone` (opennav_coverage `jazzy-v2`、
+Fields2Cover `v2.0.0`。固定値はスクリプト先頭参照) し、
+`rosdep install` と `colcon build` まで行う。
