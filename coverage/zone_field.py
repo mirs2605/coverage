@@ -1,11 +1,7 @@
-"""Zone polygon normalization (ROS-free pure functions).
+"""清掃ゾーンの点列をROSメッセージに依存せず検証・正規化する。
 
-``/cleaning_zone`` (geometry_msgs/PolygonStamped) の点列を、
-opennav_coverage_msgs ``NavigateCompleteCoverage`` ゴールの
-``polygons`` (geometry_msgs/Polygon[]) に積める形に整える。
-
-ROSメッセージ型には触れない。ROS依存なしでpytestできる層。
-実際の Point32/Polygon 組み立ては coverage_bridge 側で行う。
+入力点列は ``/cleaning_zone`` のPolygonStamped由来であり、正規化後は
+NavigateCompleteCoverageゴールへ渡す。ROSメッセージの組み立てはbridgeが担当する。
 """
 
 from __future__ import annotations
@@ -19,10 +15,9 @@ Point2D = tuple[float, float]
 
 @dataclass(frozen=True)
 class NormalizedZone:
-    """検証済みで不変な清掃ゾーン。
+    """frame_idと検証済み頂点列を保持する不変値。
 
-    ROSメッセージをcontrol flowに保持しないための値オブジェクト。入力メッセージが
-    閉路表現でも、``points`` は始点を一度だけ持つ正規化済みの点列になる。
+    閉路表現で末尾に始点が重複していても、``points`` には始点を一度だけ保持する。
     """
 
     frame_id: str
@@ -35,6 +30,7 @@ class NormalizedZone:
         points: Sequence[Sequence[float]],
         min_vertices: int = 3,
     ) -> 'NormalizedZone':
+        """座標列を検証し、閉路終端を除いた不変ゾーンを生成する。"""
         return cls(frame_id=frame_id, points=tuple(
             normalize_zone(points, min_vertices=min_vertices)
         ))
@@ -44,11 +40,17 @@ def normalize_zone(
     points: Sequence[Sequence[float]],
     min_vertices: int = 3,
 ) -> list[Point2D]:
-    """清掃ゾーン点列を検証・正規化する。
+    """清掃ゾーンの頂点列を数値座標へ変換して検証する。
 
-    - 末尾の始点重複(閉路表現)を除去する
-    - min_vertices未満・非有限値(x/yがNaN・inf)は ValueError
-    - 巻き順の正規化はしない。Fields2Coverが面倒を見る
+    閉路表現の末尾重複点は除去する。頂点数不足、数値変換不能、または
+    非有限なx/y座標がある場合はValueErrorを送出する。頂点順序は維持する。
+
+    Args:
+        points: 各要素がx/yを持つ頂点列。座標単位は[m]。
+        min_vertices: 正規化後に必要な最小頂点数。
+
+    Returns:
+        入力順を保った正規化済みのx/y座標列。
     """
     try:
         pts = [(float(p[0]), float(p[1])) for p in points]

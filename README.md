@@ -21,13 +21,17 @@ coverage/
 └── README.md
 ```
 
-## 前提 (コンテナ内。Fields2Cover v2構成)
+## 依存の導入
 
 ```bash
-cd ~/ws  # srcの親ディレクトリ
-bash src/coverage/tools/fetch-deps.sh
+cd ~/ws  # ワークスペースのルート
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
 source install/setup.bash
 ```
+
+`fields2cover` は `package.xml` で宣言しており、rosdepが導入する。
+`opennav_coverage` 関連パッケージは、利用するROS 2環境にあらかじめ導入されていることを前提とする。
 
 ## 実行方法
 

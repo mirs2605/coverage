@@ -1,4 +1,4 @@
-# coverage 設計書 (opennav_coverage版 v0.2.0)
+# coverage 設計書
 
 ## 1. 背景と目的
 
@@ -8,13 +8,6 @@
 本パッケージは、この多角形をNav2の完全カバレージ機能
 ([opennav_coverage](https://github.com/open-navigation/opennav_coverage),
 Fields2Coverベース) に引き渡す。
-
-旧来の自作boustrophedon生成 (`coverage_planner.py`/`coverage_executor.py`) は
-v0.2.0で削除した。理由:
-
-- swath・旋回・headland・迂回路の生成は既存ライブラリが遥かに堅牢
-- コストマップ連携・リカバリを自前で持つ必要がなくなる
-- Nav2のlifecycle/BTの枠組みに乗れる
 
 ## 2. アーキテクチャ
 
@@ -83,14 +76,14 @@ coverage_server (`mirs/.../nav2_params.yaml` の `coverage_server` 節が単一�
 - ゴール拒否 → `WAITING_NAV_RETRY n/3`、上限で `FAILED_REJECTED`
 - 非凸多角形: 上流Fields2Coverの制約。凸四角形(BLE仕様)を想定
 
-## 6. 依存の導入 (コンテナ内。Fields2Cover v2構成)
+## 6. 依存の導入
 
 ```bash
-cd ~/ws  # srcの親ディレクトリ
-bash src/coverage/tools/fetch-deps.sh
+cd ~/ws  # ワークスペースのルート
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
 source install/setup.bash
 ```
 
-スクリプトは未存在分だけ `git clone` (opennav_coverage `jazzy-v2`、
-Fields2Cover `v2.0.0`。固定値はスクリプト先頭参照) し、
-`rosdep install` と `colcon build` まで行う。
+`fields2cover` は本パッケージの `package.xml` で宣言し、rosdepで解決する。
+`opennav_coverage` 関連パッケージの提供形態は使用するROS 2環境に合わせ、事前に導入しておく。

@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
-"""coverage_bridge: /cleaning_zone -> NavigateCompleteCoverage (opennav_coverage).
+"""cleaning_zoneをNavigateCompleteCoverageアクションへ中継するROS 2ノード。
 
-BLE経由で届く清掃ポリゴンを、Nav2のCoverageNavigatorアクション
-(``navigate_complete_coverage``) にそのまま投げる薄いブリッジ。
-経路生成(Fields2Cover)・追従・リカバリはすべてNav2側が担う。
-本ノードは購読・ゴール投入・状態通知に徹する。
-
-フロー:
-    [ble_receiver_node] --/cleaning_zone--> [coverage_bridge]
-        --NavigateCompleteCoverage--> [bt_navigator/CoverageNavigator]
-        --ComputeCoveragePath--> [coverage_server] --nav_path--> FollowPath
+入力ポリゴンの検証、Nav2ゴール送信、進捗と終了状態の通知を行う。
+経路生成と追従はNav2のcoverage_serverとCoverageNavigatorが担当する。
 """
 
 from __future__ import annotations
@@ -31,7 +24,7 @@ from coverage.zone_field import NormalizedZone
 
 
 def _coerce_float(value: Any, default: float) -> float:
-    """launch経由の文字列("0.35")も含めてfloat化する。"""
+    """ROSパラメータ値をfloatへ変換し、変換不能時は既定値を返す。"""
     try:
         if isinstance(value, str):
             value = value.strip().strip('"').strip("'")
@@ -41,6 +34,7 @@ def _coerce_float(value: Any, default: float) -> float:
 
 
 def _coerce_int(value: Any, default: int) -> int:
+    """ROSパラメータ値を整数へ変換し、変換不能時は既定値を返す。"""
     try:
         if isinstance(value, str):
             value = value.strip().strip('"').strip("'")
@@ -50,6 +44,7 @@ def _coerce_int(value: Any, default: int) -> int:
 
 
 def _coerce_str(value: Any, default: str) -> str:
+    """ROSパラメータ値を文字列へ変換し、Noneには既定値を返す。"""
     if value is None:
         return default
     if isinstance(value, str):
@@ -58,7 +53,14 @@ def _coerce_str(value: Any, default: str) -> str:
 
 
 class CoverageBridge(Node):
+    """清掃ゾーンのNav2実行要求と状態通知を管理する。
+
+    ``/cleaning_zone`` の最新値を送信し、サーバ不在やゴール拒否時は再試行する。
+    新しいゾーンの受信時は実行中ゴールをキャンセルして最新値を優先する。
+    """
+
     def __init__(self) -> None:
+        """topic、action client、再試行タイマーを初期化する。"""
         super().__init__('coverage_bridge')
         self.declare_parameter('zone_topic', '/cleaning_zone')
         self.declare_parameter('state_topic', '/coverage/state')
@@ -69,7 +71,7 @@ class CoverageBridge(Node):
         self.declare_parameter('nav_timeout_sec', 5.0)
         self.declare_parameter('retry_limit', 3)
         self.declare_parameter('backoff_sec', 5.0)
-        # NOTE: use_sim_time は rclpy が自動宣言するため宣言しない。
+        # use_sim_timeはrclpyが自動宣言するため、ここでは重複して宣言しない。
 
         raw = {n: self.get_parameter(n).value for n in (
             'zone_topic', 'state_topic', 'action_name', 'frame_id',
@@ -86,17 +88,21 @@ class CoverageBridge(Node):
         self._lock = threading.Lock()
         self._goal_handle = None
         self._executing = False
-        self._generation = 0  # 古いコールバックを無視するための世代番号
+        # 最新世代以外の非同期応答を破棄し、goal切替後の状態上書きを防ぐ。
+        self._generation = 0
         self._reject_count = 0
         self._next_retry_time = 0.0
 
+        # state通知はQoS depth 10でpublishする。
         self._state_pub = self.create_publisher(String, self._state_topic, 10)
+        # 入力ゾーンをQoS depth 10で受信する。
         self.create_subscription(
             PolygonStamped, self._zone_topic, self._on_zone, 10
         )
         self._nav_client: ActionClient = ActionClient(
             self, NavigateCompleteCoverage, self._action_name
         )
+        # 保留ゾーンを1.0s周期で再送可能か確認する。
         self.create_timer(1.0, self._on_retry_timer)
 
         self.get_logger().info(
@@ -104,20 +110,22 @@ class CoverageBridge(Node):
             f'action={self._action_name}'
         )
 
-    # --- 小物 ---
     def _float_param(self, name: str, default: float) -> float:
+        """指定パラメータをfloatとして取得する。"""
         return _coerce_float(self.get_parameter(name).value, default)
 
     def _int_param(self, name: str, default: int) -> int:
+        """指定パラメータをintとして取得する。"""
         return _coerce_int(self.get_parameter(name).value, default)
 
     def _publish_state(self, text: str) -> None:
+        """coverage状態文字列をstate topicへpublishする。"""
         msg = String()
         msg.data = text
         self._state_pub.publish(msg)
 
-    # --- 購読・再試行 ---
     def _on_zone(self, msg: PolygonStamped) -> None:
+        """受信ゾーンを検証し、Nav2へ最新の実行要求を送る。"""
         min_vertices = self._int_param('min_vertices', 3)
         try:
             zone = NormalizedZone.from_points(
@@ -137,6 +145,7 @@ class CoverageBridge(Node):
         self._try_send(zone)
 
     def _on_retry_timer(self) -> None:
+        """実行中要求がなく再試行時刻を過ぎた場合、保留ゾーンを再送する。"""
         with self._lock:
             pending = self._pending_zone
             executing = self._executing
@@ -144,8 +153,8 @@ class CoverageBridge(Node):
         if pending is not None and not executing and ready:
             self._try_send(pending)
 
-    # --- Nav2投入 ---
     def _make_goal(self, zone: NormalizedZone) -> NavigateCompleteCoverage.Goal:
+        """正規化済みゾーンからCoverageNavigatorのgoalを組み立てる。"""
         goal = NavigateCompleteCoverage.Goal()
         goal.frame_id = zone.frame_id
         poly = Polygon()
@@ -160,6 +169,7 @@ class CoverageBridge(Node):
         return goal
 
     def _cancel_current_goal(self) -> None:
+        """現在のgoalを無効化し、受理済みならNav2へcancelを要求する。"""
         with self._lock:
             self._generation += 1
             handle = self._goal_handle
@@ -173,6 +183,7 @@ class CoverageBridge(Node):
                 self.get_logger().warn(f'ゴールキャンセル失敗: {e}')
 
     def _try_send(self, zone: NormalizedZone) -> None:
+        """action serverを待ち、ゾーンgoalを非同期で送信する。"""
         timeout = self._float_param('nav_timeout_sec', 5.0)
         if not self._nav_client.wait_for_server(timeout_sec=timeout):
             self.get_logger().warn(
@@ -192,10 +203,12 @@ class CoverageBridge(Node):
         send_future.add_done_callback(functools.partial(self._on_goal_response, gen))
 
     def _stale(self, gen: int) -> bool:
+        """指定世代が最新でなく、結果を破棄すべきならTrueを返す。"""
         with self._lock:
             return gen != self._generation
 
     def _on_feedback(self, gen: int, msg) -> None:
+        """最新goalの残距離とリカバリ回数を記録する。"""
         if self._stale(gen):
             return
         remaining = msg.feedback.distance_remaining
@@ -206,6 +219,7 @@ class CoverageBridge(Node):
         )
 
     def _on_goal_response(self, gen: int, future) -> None:
+        """goal受理結果を処理し、受理時は結果コールバックを登録する。"""
         if self._stale(gen):
             return
         try:
@@ -226,6 +240,7 @@ class CoverageBridge(Node):
         result_future.add_done_callback(functools.partial(self._on_nav_result, gen))
 
     def _on_rejected(self) -> None:
+        """拒否回数に応じて待機、再試行、または失敗状態へ遷移する。"""
         limit = self._int_param('retry_limit', 3)
         backoff = self._float_param('backoff_sec', 5.0)
         with self._lock:
@@ -252,6 +267,7 @@ class CoverageBridge(Node):
         self._publish_state(f'WAITING_NAV_RETRY {count}/{limit}')
 
     def _on_nav_result(self, gen: int, future) -> None:
+        """最新goalの終了状態をDONE、CANCELED、失敗として通知する。"""
         if self._stale(gen):
             return
         with self._lock:
@@ -277,6 +293,7 @@ class CoverageBridge(Node):
 
 
 def main(args=None) -> None:
+    """coverage_bridgeを初期化し、ROS 2イベントを処理する。"""
     rclpy.init(args=args)
     node = CoverageBridge()
     try:

@@ -1,1 +1,1 @@
-"""coverage: BLE cleaning-zone to Nav2 complete coverage bridge."""
+"""BLE清掃ゾーンをNav2完全カバレージへ接続するROS 2パッケージ。"""

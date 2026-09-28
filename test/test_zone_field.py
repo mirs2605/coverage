@@ -1,4 +1,4 @@
-"""Unit tests for zone_field (ROS-free)."""
+"""zone_fieldの座標検証と正規化の契約を検証する。"""
 
 import pytest
 
@@ -33,7 +33,7 @@ def test_non_finite_raises():
 
 
 def test_order_preserved():
-    # 巻き順はF2Cに任せる。入力順を変えないこと
+    # 頂点順序は入力値のまま保持する。
     pts = [(2.0, 1.0), (0.0, 0.0), (0.0, 1.0), (2.0, 0.0)]
     assert normalize_zone(pts) == pts
 

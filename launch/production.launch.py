@@ -1,28 +1,7 @@
-"""production.launch.py: 本番用一発起動 (opennav_coverage版).
+"""MIRS車体、Nav2、coverage server、BLE受信、bridgeをまとめて起動する。
 
-MIRS基本(ハードウェア) + Nav2 + coverage_server + BLE受信 + bridgeを
-1コマンドで立ち上げる。経路生成はopennav_coverage(Fields2Cover)が担い、
-本パッケージは /cleaning_zone -> NavigateCompleteCoverage の橋渡しのみ。
-
-起動例:
-    ros2 launch coverage production.launch.py
-    ros2 launch coverage production.launch.py use_rviz:=false
-    ros2 launch coverage production.launch.py enable_ble:=false  # 手動テスト用
-    ros2 launch coverage production.launch.py enable_hardware:=false  # Nav2のみ
-
-構成:
-    [mirs_hardware.launch.py] (parameter/micro-ROS/LiDAR/EKF/静的TF)
-    [nav2_bringup bringup_launch.py] (map + mirs/config/navigation/nav2_params.yaml)
-    [opennav_coverage coverage_server] (Nav2 Task Server, lifecycle管理対象)
-    [ble_server ble_receiver_node] (/cleaning_zone 配信)
-    [coverage coverage_bridge] (/cleaning_zone -> navigate_complete_coverage)
-    [rviz2] (rviz/coverage.rviz, use_rviz:=true時のみ)
-
-前提:
-    - src/ に opennav_coverage (jazzy-v2ブランチ) をcloneし、
-      ros-jazzy-fields2cover を導入しておくこと (README参照)。
-    - coverage_server のパラメータは nav2_params.yaml の coverage_server節が
-      単一真実。launch側では上書きしない。
+地図生成・coverage経路計算・走行追従は、それぞれSLAM/Nav2/coverage serverが担う。
+個別機能はlaunch引数で有効・無効を選択できる。
 """
 
 import os
@@ -37,10 +16,12 @@ from launch_ros.actions import Node
 
 
 def _arg(name, default, description=''):
+    """launch引数を既定値と説明付きで宣言する。"""
     return DeclareLaunchArgument(name, default_value=default, description=description)
 
 
 def generate_launch_description():
+    """MIRSの各launchとROSノードを条件付きで構成して返す。"""
     mirs_share = get_package_share_directory('mirs')
     nav2_bringup_dir = get_package_share_directory('nav2_bringup')
     coverage_share = get_package_share_directory('coverage')
@@ -65,14 +46,14 @@ def generate_launch_description():
         _arg('enable_ekf_local', 'true', 'EKF odom->base_footprint (off時はstatic TFで代用可)'),
         _arg('enable_static_odom_tf', 'false', 'Static odom->base_link (EKFと排他。実機なし試験用)'),
         _arg('autostart', 'true', 'Autostart Nav2 lifecycle'),
-        # NOTE: nav2_bringup側が PythonExpression(['not ', slam]) で評価するため
-        # 必ず Pythonリテラル形式 'True'/'False' で渡すこと。
+        # nav2_bringupのPythonExpressionで評価されるためPython bool表記を渡す。
         _arg('slam', 'False', 'Set True for SLAM mode (no map_server)'),
         _arg('zone_topic', '/cleaning_zone'),
         _arg('state_topic', '/coverage/state'),
         _arg('behavior_tree', '', 'BT XML override (empty=server default)'),
     ]
 
+    # enable_hardware=trueのときESP32・LiDAR・TF関連のlaunchを含める。
     mirs_hardware = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(mirs_share, 'launch', 'mirs_hardware.launch.py')
@@ -89,6 +70,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_hardware')),
     )
 
+    # enable_nav2=trueのとき地図またはSLAM設定でNav2を起動する。
     nav2_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(nav2_bringup_dir, 'launch', 'bringup_launch.py')
@@ -103,10 +85,9 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_nav2')),
     )
 
-    # opennav_coverage Task Server。パラメータは nav2_params.yaml の
-    # coverage_server節が単一真実。use_sim_timeのみlaunchで上書きする。
-    # NOTE: nav2_bringup側lifecycleは自前の固定リストで管理するため、
-    # coverage_serverは専用managerでactive化する。
+    # coverage server設定はnav2_params.yamlを使い、時刻設定だけlaunchから渡す。
+    # Nav2本体のlifecycle一覧に含まれないため、専用managerでactive化する。
+    # enable_coverage_server=trueのときcoverage task serverを起動する。
     coverage_server = Node(
         package='opennav_coverage',
         executable='opennav_coverage',
@@ -119,6 +100,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
     )
 
+    # serverを起動するときだけ専用lifecycle managerも起動する。
     coverage_lifecycle = Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
@@ -133,6 +115,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
     )
 
+    # enable_ble=trueのときBLE受信ノードからcleaning_zoneをpublishする。
     ble_receiver = Node(
         package='ble_server',
         executable='ble_receiver_node',
@@ -146,6 +129,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_ble')),
     )
 
+    # enable_bridge=trueのときcleaning_zoneをcoverage actionへ中継する。
     bridge = Node(
         package='coverage',
         executable='coverage_bridge',
@@ -161,6 +145,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_bridge')),
     )
 
+    # use_rviz=trueのときcoverage表示設定を読み込んでRVizを起動する。
     rviz = Node(
         package='rviz2',
         executable='rviz2',

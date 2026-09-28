@@ -1,7 +1,4 @@
-# coverage 用 RViz 設定 (opennav_coverage版)。
-# 地図・Global Costmap・LaserScan・清掃範囲(/cleaning_zone)・
-# カバレッジ計画(/coverage_server/coverage_plan, /coverage_server/swaths,
-# /coverage_server/field_boundary)・Nav2計画(/plan)を確認する。
+# 清掃ゾーン、coverage経路、Nav2計画とセンサ情報を可視化するRViz設定。
 Panels:
   - Class: rviz_common/Displays
     Help Height: 0

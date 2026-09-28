@@ -1,15 +1,6 @@
-"""coverage.launch.py: coverage_server + bridge + 確認用RViz の最小起動。
+"""Nav2本体起動済み環境でcoverage_server、bridge、確認用RVizを起動する。
 
-Nav2本体は別途起動済み(またはproduction.launch.pyを使う)想定。
-opennav_coverage単体の動作確認用。
-
-opennav_coverage未導入でもbridge単体で起動できるよう、
-enable_coverage_server:=false でserverを外せる。
-
-起動例:
-    ros2 launch coverage coverage.launch.py
-    ros2 launch coverage coverage.launch.py use_rviz:=false
-    ros2 launch coverage coverage.launch.py enable_coverage_server:=false
+``enable_coverage_server:=false`` はaction serverを起動せずbridge単体で試す場合に使う。
 """
 import os
 from ament_index_python.packages import get_package_share_directory
@@ -21,6 +12,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    """選択可能なcoverage server、bridge、RVizのlaunch記述を返す。"""
     mirs_share = get_package_share_directory('mirs')
     nav2_params = os.path.join(
         mirs_share, 'config', 'navigation', 'nav2_params.yaml')
@@ -43,6 +35,7 @@ def generate_launch_description():
             description='Whether to start RViz with coverage.rviz',
         ),
         LogInfo(msg='[coverage] starting coverage_server + bridge...'),
+        # enable_coverage_server=trueのときcoverage task serverを起動する。
         Node(
             package='opennav_coverage',
             executable='opennav_coverage',
@@ -52,7 +45,9 @@ def generate_launch_description():
                 nav2_params,
                 {'use_sim_time': LaunchConfiguration('use_sim_time')},
             ],
+            condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
         ),
+        # task serverを起動するときだけlifecycle管理対象へ登録する。
         Node(
             package='nav2_lifecycle_manager',
             executable='lifecycle_manager',
@@ -64,6 +59,7 @@ def generate_launch_description():
                 'node_names': ['coverage_server'],
                 'bond_timeout': 10.0,
             }],
+            condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
         ),
         Node(
             package='coverage',
@@ -78,6 +74,7 @@ def generate_launch_description():
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
             }],
         ),
+        # use_rviz=trueのときcoverage確認用設定でRVizを起動する。
         Node(
             package='rviz2',
             executable='rviz2',
