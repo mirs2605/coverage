@@ -27,7 +27,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from coverage.zone_field import normalize_zone
+from coverage.zone_field import NormalizedZone
 
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -82,7 +82,7 @@ class CoverageBridge(Node):
         self._default_frame = _coerce_str(raw['frame_id'], 'map')
         self._behavior_tree = _coerce_str(raw['behavior_tree'], '')
 
-        self._pending_zone: PolygonStamped | None = None
+        self._pending_zone: NormalizedZone | None = None
         self._lock = threading.Lock()
         self._goal_handle = None
         self._executing = False
@@ -120,18 +120,21 @@ class CoverageBridge(Node):
     def _on_zone(self, msg: PolygonStamped) -> None:
         min_vertices = self._int_param('min_vertices', 3)
         try:
-            normalize_zone([(p.x, p.y) for p in msg.polygon.points],
-                           min_vertices=min_vertices)
+            zone = NormalizedZone.from_points(
+                frame_id=msg.header.frame_id or self._default_frame,
+                points=[(p.x, p.y) for p in msg.polygon.points],
+                min_vertices=min_vertices,
+            )
         except ValueError as e:
             self.get_logger().error(f'不正なゾーンのため無視します: {e}')
             self._publish_state('FAILED_INVALID_ZONE')
             return
         self._cancel_current_goal()
         with self._lock:
-            self._pending_zone = msg
+            self._pending_zone = zone
             self._reject_count = 0
             self._next_retry_time = 0.0
-        self._try_send(msg)
+        self._try_send(zone)
 
     def _on_retry_timer(self) -> None:
         with self._lock:
@@ -142,13 +145,13 @@ class CoverageBridge(Node):
             self._try_send(pending)
 
     # --- Nav2投入 ---
-    def _make_goal(self, msg: PolygonStamped) -> NavigateCompleteCoverage.Goal:
+    def _make_goal(self, zone: NormalizedZone) -> NavigateCompleteCoverage.Goal:
         goal = NavigateCompleteCoverage.Goal()
-        goal.frame_id = msg.header.frame_id or self._default_frame
+        goal.frame_id = zone.frame_id
         poly = Polygon()
-        for p in msg.polygon.points:
+        for x, y in zone.points:
             pt = Point32()
-            pt.x, pt.y = float(p.x), float(p.y)
+            pt.x, pt.y = x, y
             pt.z = 0.0
             poly.points.append(pt)
         goal.polygons.append(poly)
@@ -169,7 +172,7 @@ class CoverageBridge(Node):
             except Exception as e:  # noqa: BLE001
                 self.get_logger().warn(f'ゴールキャンセル失敗: {e}')
 
-    def _try_send(self, msg: PolygonStamped) -> None:
+    def _try_send(self, zone: NormalizedZone) -> None:
         timeout = self._float_param('nav_timeout_sec', 5.0)
         if not self._nav_client.wait_for_server(timeout_sec=timeout):
             self.get_logger().warn(
@@ -183,7 +186,7 @@ class CoverageBridge(Node):
             gen = self._generation
             self._executing = True
         send_future = self._nav_client.send_goal_async(
-            self._make_goal(msg),
+            self._make_goal(zone),
             feedback_callback=functools.partial(self._on_feedback, gen),
         )
         send_future.add_done_callback(functools.partial(self._on_goal_response, gen))

@@ -11,9 +11,33 @@ ROSメッセージ型には触れない。ROS依存なしでpytestできる層�
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Sequence
 
 Point2D = tuple[float, float]
+
+
+@dataclass(frozen=True)
+class NormalizedZone:
+    """検証済みで不変な清掃ゾーン。
+
+    ROSメッセージをcontrol flowに保持しないための値オブジェクト。入力メッセージが
+    閉路表現でも、``points`` は始点を一度だけ持つ正規化済みの点列になる。
+    """
+
+    frame_id: str
+    points: tuple[Point2D, ...]
+
+    @classmethod
+    def from_points(
+        cls,
+        frame_id: str,
+        points: Sequence[Sequence[float]],
+        min_vertices: int = 3,
+    ) -> 'NormalizedZone':
+        return cls(frame_id=frame_id, points=tuple(
+            normalize_zone(points, min_vertices=min_vertices)
+        ))
 
 
 def normalize_zone(
@@ -26,7 +50,10 @@ def normalize_zone(
     - min_vertices未満・非有限値(x/yがNaN・inf)は ValueError
     - 巻き順の正規化はしない。Fields2Coverが面倒を見る
     """
-    pts = [(float(p[0]), float(p[1])) for p in points]
+    try:
+        pts = [(float(p[0]), float(p[1])) for p in points]
+    except (IndexError, TypeError, ValueError) as exc:
+        raise ValueError('zone points must contain numeric x/y coordinates') from exc
     if len(pts) >= 2 and pts[0] == pts[-1]:
         pts = pts[:-1]
     if len(pts) < min_vertices:

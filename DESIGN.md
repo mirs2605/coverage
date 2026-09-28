@@ -25,7 +25,7 @@ v0.2.0で削除した。理由:
 ```
 
 - `ble_server`: 無改修。前段の検証済み出力をそのまま使う
-- `coverage/zone_field.py`: ROS非依存の純粋関数(検証・正規化)。pytest対象
+- `coverage/zone_field.py`: ROS非依存の検証・正規化と不変ゾーン値。pytest対象
 - `coverage/coverage_bridge.py`: ROSノード。購読・ゴール投入・状態通知に徹する
 - `opennav_coverage/coverage_server`: Nav2 Task Server。swath/route/path生成
 - `opennav_coverage_navigator/CoverageNavigator`: bt_navigatorプラグイン。
