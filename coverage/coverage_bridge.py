@@ -163,6 +163,13 @@ class CoverageBridge(Node):
             pt.x, pt.y = x, y
             pt.z = 0.0
             poly.points.append(pt)
+        # Fields2Coverは閉路(始点==終点)を要求するため、始点を末尾へ追加する。
+        # 未閉形のまま送るとcoverage_serverがINVALID_COORDS(803)で破棄する。
+        if zone.points:
+            pt = Point32()
+            pt.x, pt.y = zone.points[0][0], zone.points[0][1]
+            pt.z = 0.0
+            poly.points.append(pt)
         goal.polygons.append(poly)
         if self._behavior_tree:
             goal.behavior_tree = self._behavior_tree
