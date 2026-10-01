@@ -1,4 +1,4 @@
-# mirs_coverage (ROS 2 Package)
+# coverage (ROS 2 Package)
 
 BLEで受信した清掃範囲ポリゴン (`/cleaning_zone`, `geometry_msgs/PolygonStamped`)
 を、Nav2で実行できるカバレッジ走行ウェイポイント列に変換するパッケージです。
