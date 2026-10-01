@@ -32,7 +32,7 @@ Fields2Coverベース) に引き渡す。
 | 方向 | 名前 | 型・備考 |
 |-----|------|---------|
 | 購読 | `/cleaning_zone` | `PolygonStamped`, QoS 10 |
-| 公開 | `/coverage/state` | `std_msgs/String` (`EXECUTING` / `DONE` / `CANCELED` / `FAILED_*` / `WAITING_*`) |
+| 公開 | `/coverage/state` | `std_msgs/String` (`DONE` / `CANCELED` / `FAILED` / `FAILED_INVALID_ZONE` / `FAILED_REJECTED` / `WAITING_NAV_SERVER` / `WAITING_NAV_RETRY n/m`) |
 | 送出 | `navigate_complete_coverage` | `opennav_coverage_msgs/NavigateCompleteCoverage` |
 | 可視化 | `/coverage_server/coverage_plan` | `nav_msgs/Path` (RViz緑) |
 | 可視化 | `/coverage_server/field_boundary` | `PolygonStamped` (RViz緑) |
@@ -52,10 +52,13 @@ bridge (`coverage_bridge`):
 | `state_topic` | `/coverage/state` | 状態通知 |
 | `action_name` | `navigate_complete_coverage` | CoverageNavigator |
 | `frame_id` | `map` | ゾーンにframe_idが無い場合の代替 |
+| `min_vertices` | `3` | ゾーンの最小頂点数 |
 | `behavior_tree` | `""` | BT上書き(空=純正デフォルト) |
-| `nav_timeout_sec` | `5.0` | アクションサーバ待ち |
-| `retry_limit` | `3` | 拒否の上限 |
-| `backoff_sec` | `5.0` | 再送間隔 |
+| `retry_limit` | `3` | 拒否・実行失敗の連続上限（受理ではリセットしない） |
+| `backoff_sec` | `5.0` | 再送間隔 [s] |
+
+server不在の確認は非ブロッキングで行い、1.0s周期タイマーが再送する。
+同一state文字列の連続publishは抑止する。
 
 coverage_server (`mirs/.../nav2_params.yaml` の `coverage_server` 節が単一真実):
 
@@ -74,6 +77,7 @@ coverage_server (`mirs/.../nav2_params.yaml` の `coverage_server` 節が単一�
 - 頂点数不足・非有限値 → ロボットを動かさず `FAILED_INVALID_ZONE`
 - Nav2サーバ不在 → `WAITING_NAV_SERVER` で待機(1秒周期再試行)
 - ゴール拒否 → `WAITING_NAV_RETRY n/3`、上限で `FAILED_REJECTED`
+- 実行失敗(abort等の非成功終了) → `WAITING_NAV_RETRY n/3`、上限で `FAILED`
 - 非凸多角形: 上流Fields2Coverの制約。凸四角形(BLE仕様)を想定
 
 ## 6. 依存の導入

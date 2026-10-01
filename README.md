@@ -12,6 +12,7 @@ BLEで受信した清掃範囲ポリゴン (`/cleaning_zone`, `geometry_msgs/Pol
 coverage/
 ├── coverage/
 │   ├── zone_field.py       # ROS非依存の検証・正規化(pytest対象)
+│   ├── retry_policy.py     # ROS非依存の再送計数・待機判定(pytest対象)
 │   └── coverage_bridge.py  # ROSノード(購読・NavigateCompleteCoverage投入・状態通知)
 ├── launch/production.launch.py # 本番一発起動(hardware+Nav2+coverage_server+BLE+bridge+RViz)
 ├── launch/coverage.launch.py   # 最小起動(coverage_server+bridge+RViz)
@@ -61,5 +62,8 @@ Nav2計画 (`/plan`, 赤)を確認できます。
 ## テスト
 
 ```bash
-python3 -m pytest src/coverage/test/ -v
+# ワークスペースルートから
+python3 -m pytest src/original/coverage/test/ -v
+# パッケージディレクトリから
+cd src/original/coverage && python3 -m pytest test/ -v
 ```

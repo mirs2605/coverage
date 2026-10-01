@@ -21,6 +21,16 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from coverage.zone_field import NormalizedZone
+from coverage.retry_policy import RetryPolicy
+
+
+# /coverage/state 通知の terminal 状態文字列。
+STATE_DONE = 'DONE'
+STATE_CANCELED = 'CANCELED'
+STATE_FAILED = 'FAILED'
+STATE_FAILED_INVALID_ZONE = 'FAILED_INVALID_ZONE'
+STATE_FAILED_REJECTED = 'FAILED_REJECTED'
+STATE_WAITING_NAV_SERVER = 'WAITING_NAV_SERVER'
 
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -68,7 +78,6 @@ class CoverageBridge(Node):
         self.declare_parameter('frame_id', 'map')
         self.declare_parameter('behavior_tree', '')
         self.declare_parameter('min_vertices', 3)
-        self.declare_parameter('nav_timeout_sec', 5.0)
         self.declare_parameter('retry_limit', 3)
         self.declare_parameter('backoff_sec', 5.0)
         # use_sim_timeはrclpyが自動宣言するため、ここでは重複して宣言しない。
@@ -90,8 +99,11 @@ class CoverageBridge(Node):
         self._executing = False
         # 最新世代以外の非同期応答を破棄し、goal切替後の状態上書きを防ぐ。
         self._generation = 0
-        self._reject_count = 0
-        self._next_retry_time = 0.0
+        # 拒否・実行失敗の連続計数。受理ではリセットしない。
+        self._retry = RetryPolicy()
+        self._sync_retry_params()
+        # 同一state文字列の連続publishを抑止する。
+        self._last_state = ''
 
         # state通知はQoS depth 10でpublishする。
         self._state_pub = self.create_publisher(String, self._state_topic, 10)
@@ -118,8 +130,18 @@ class CoverageBridge(Node):
         """指定パラメータをintとして取得する。"""
         return _coerce_int(self.get_parameter(name).value, default)
 
+    def _sync_retry_params(self) -> None:
+        """再送上限と待機秒数 [s] をROSパラメータへ追従させる。"""
+        with self._lock:
+            self._retry.limit = self._int_param('retry_limit', 3)
+            self._retry.backoff_sec = self._float_param('backoff_sec', 5.0)
+
     def _publish_state(self, text: str) -> None:
-        """coverage状態文字列をstate topicへpublishする。"""
+        """coverage状態文字列をstate topicへpublishする。同一文言の連続送信は抑止する。"""
+        with self._lock:
+            if text == self._last_state:
+                return
+            self._last_state = text
         msg = String()
         msg.data = text
         self._state_pub.publish(msg)
@@ -135,13 +157,13 @@ class CoverageBridge(Node):
             )
         except ValueError as e:
             self.get_logger().error(f'不正なゾーンのため無視します: {e}')
-            self._publish_state('FAILED_INVALID_ZONE')
+            self._publish_state(STATE_FAILED_INVALID_ZONE)
             return
         self._cancel_current_goal()
         with self._lock:
             self._pending_zone = zone
-            self._reject_count = 0
-            self._next_retry_time = 0.0
+        self._sync_retry_params()
+        self._retry.reset()
         self._try_send(zone)
 
     def _on_retry_timer(self) -> None:
@@ -149,8 +171,8 @@ class CoverageBridge(Node):
         with self._lock:
             pending = self._pending_zone
             executing = self._executing
-            ready = time.monotonic() >= self._next_retry_time
-        if pending is not None and not executing and ready:
+        self._sync_retry_params()
+        if pending is not None and not executing and self._retry.ready(time.monotonic()):
             self._try_send(pending)
 
     def _make_goal(self, zone: NormalizedZone) -> NavigateCompleteCoverage.Goal:
@@ -190,14 +212,16 @@ class CoverageBridge(Node):
                 self.get_logger().warn(f'ゴールキャンセル失敗: {e}')
 
     def _try_send(self, zone: NormalizedZone) -> None:
-        """action serverを待ち、ゾーンgoalを非同期で送信する。"""
-        timeout = self._float_param('nav_timeout_sec', 5.0)
-        if not self._nav_client.wait_for_server(timeout_sec=timeout):
+        """action serverを確認し、ゾーンgoalを非同期で送信する。
+
+        server不在の確認は非ブロッキングで行い、1.0s周期タイマーが再送する。
+        """
+        if not self._nav_client.wait_for_server(timeout_sec=0.0):
             self.get_logger().warn(
                 f'{self._action_name}サーバ不在のため再試行します',
                 throttle_duration_sec=10.0,
             )
-            self._publish_state('WAITING_NAV_SERVER')
+            self._publish_state(STATE_WAITING_NAV_SERVER)
             return
         with self._lock:
             self._generation += 1
@@ -235,43 +259,55 @@ class CoverageBridge(Node):
             self.get_logger().error(f'ゴール送信エラー: {e}')
             with self._lock:
                 self._executing = False
-            self._publish_state('FAILED')
+            self._publish_state(STATE_FAILED)
             return
         if handle is None or not handle.accepted:
-            self._on_rejected()
+            self._register_setback(goal_rejected=True)
             return
         with self._lock:
-            self._reject_count = 0
             self._goal_handle = handle
         result_future = handle.get_result_async()
         result_future.add_done_callback(functools.partial(self._on_nav_result, gen))
 
-    def _on_rejected(self) -> None:
-        """拒否回数に応じて待機、再試行、または失敗状態へ遷移する。"""
-        limit = self._int_param('retry_limit', 3)
-        backoff = self._float_param('backoff_sec', 5.0)
-        with self._lock:
-            self._executing = False
-            self._reject_count += 1
-            count = self._reject_count
-        if count >= limit:
-            self.get_logger().error(
-                f'Nav2にゴールを{count}回拒否されました。諦めます。'
-                '初期位置(2D Pose Estimate)・lifecycle(bt_navigator active)・'
-                'TF(map->base_footprint)を確認してください。'
-            )
-            self._publish_state('FAILED_REJECTED')
+    def _register_setback(self, goal_rejected: bool) -> None:
+        """拒否・実行失敗を計数し、上限到達で諦めてterminal状態を通知する。
+
+        受理時のリセットは行わない。受理後に失敗が続けば上限で諦める。
+        """
+        self._sync_retry_params()
+        give_up = self._retry.record_failure(time.monotonic())
+        if give_up:
             with self._lock:
                 self._pending_zone = None
+        if goal_rejected:
+            count, limit = self._retry.failures, self._retry.limit
+            if give_up:
+                self.get_logger().error(
+                    f'Nav2にゴールを{count}回拒否されました。諦めます。'
+                    '初期位置(2D Pose Estimate)・lifecycle(bt_navigator active)・'
+                    'TF(map->base_footprint)を確認してください。'
+                )
+                self._publish_state(STATE_FAILED_REJECTED)
+                return
+            self.get_logger().warn(
+                f'Nav2にゴールを拒否されました({count}/{limit})。'
+                f'{self._retry.backoff_sec:.0f}s後に再送します。',
+                throttle_duration_sec=10.0,
+            )
+            self._publish_state(self._retry.state_text())
             return
-        with self._lock:
-            self._next_retry_time = time.monotonic() + backoff
+        if give_up:
+            self.get_logger().error(
+                f'Nav2実行が{self._retry.failures}回失敗しました。諦めます。'
+            )
+            self._publish_state(STATE_FAILED)
+            return
         self.get_logger().warn(
-            f'Nav2にゴールを拒否されました({count}/{limit})。'
-            f'{backoff:.0f}s後に再送します。',
+            f'Nav2実行が失敗しました({self._retry.state_text()})。'
+            f'{self._retry.backoff_sec:.0f}s後に再送します。',
             throttle_duration_sec=10.0,
         )
-        self._publish_state(f'WAITING_NAV_RETRY {count}/{limit}')
+        self._publish_state(self._retry.state_text())
 
     def _on_nav_result(self, gen: int, future) -> None:
         """最新goalの終了状態をDONE、CANCELED、失敗として通知する。"""
@@ -283,20 +319,20 @@ class CoverageBridge(Node):
             status = future.result().status
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f'Nav2実行エラー: {e}')
-            self._publish_state('FAILED')
+            self._publish_state(STATE_FAILED)
             return
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info('清掃完了(DONE)')
-            self._publish_state('DONE')
+            self._publish_state(STATE_DONE)
             with self._lock:
                 self._pending_zone = None
-                self._reject_count = 0
+            self._retry.reset()
         elif status == GoalStatus.STATUS_CANCELED:
             self.get_logger().info('清掃キャンセル(CANCELED)')
-            self._publish_state('CANCELED')
+            self._publish_state(STATE_CANCELED)
         else:
             self.get_logger().error(f'清掃失敗(status={status})')
-            self._on_rejected()
+            self._register_setback(goal_rejected=False)
 
 
 def main(args=None) -> None:
