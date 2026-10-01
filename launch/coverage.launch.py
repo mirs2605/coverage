@@ -16,6 +16,11 @@ def generate_launch_description():
     mirs_share = get_package_share_directory('mirs')
     nav2_params = os.path.join(
         mirs_share, 'config', 'navigation', 'nav2_params.yaml')
+    default_behavior_tree = os.path.join(
+        get_package_share_directory('coverage'),
+        'behavior_trees',
+        'navigate_coverage_w_recovery.xml',
+    )
     rviz_config = os.path.join(
         get_package_share_directory('coverage'),
         'rviz',
@@ -24,7 +29,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('zone_topic', default_value='/cleaning_zone'),
         DeclareLaunchArgument('state_topic', default_value='/coverage/state'),
-        DeclareLaunchArgument('behavior_tree', default_value=''),
+        DeclareLaunchArgument('behavior_tree', default_value=default_behavior_tree),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument(
             'enable_coverage_server', default_value='true',

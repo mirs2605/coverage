@@ -15,12 +15,15 @@ from typing import Any
 import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Point32, Polygon, PolygonStamped
+from nav_msgs.msg import OccupancyGrid
 from opennav_coverage_msgs.action import NavigateCompleteCoverage
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from coverage.zone_field import NormalizedZone
+from coverage.zone_map import zone_occupancy
 from coverage.retry_policy import RetryPolicy
 
 
@@ -80,6 +83,8 @@ class CoverageBridge(Node):
         self.declare_parameter('min_vertices', 3)
         self.declare_parameter('retry_limit', 3)
         self.declare_parameter('backoff_sec', 5.0)
+        self.declare_parameter('check_map_occupancy', True)
+        self.declare_parameter('max_occupied_ratio', 0.05)
         # use_sim_timeはrclpyが自動宣言するため、ここでは重複して宣言しない。
 
         raw = {n: self.get_parameter(n).value for n in (
@@ -111,6 +116,17 @@ class CoverageBridge(Node):
         self.create_subscription(
             PolygonStamped, self._zone_topic, self._on_zone, 10
         )
+        # 静的障害物の事前検証用に/mapをtransient localで受信する。
+        map_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self._latest_map: OccupancyGrid | None = None
+        self.create_subscription(
+            OccupancyGrid, '/map', self._on_map, map_qos
+        )
         self._nav_client: ActionClient = ActionClient(
             self, NavigateCompleteCoverage, self._action_name
         )
@@ -121,6 +137,15 @@ class CoverageBridge(Node):
             f'coverage_bridge started: zone={self._zone_topic} '
             f'action={self._action_name}'
         )
+
+    def _bool_param(self, name: str, default: bool) -> bool:
+        """指定パラメータをboolとして取得する。"""
+        value = self.get_parameter(name).value
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ('true', '1', 'yes')
+        return default if value is None else bool(value)
 
     def _float_param(self, name: str, default: float) -> float:
         """指定パラメータをfloatとして取得する。"""
@@ -146,6 +171,37 @@ class CoverageBridge(Node):
         msg.data = text
         self._state_pub.publish(msg)
 
+    def _on_map(self, msg: OccupancyGrid) -> None:
+        """事前検証用に最新の地図を保持する。"""
+        with self._lock:
+            self._latest_map = msg
+
+    def _zone_blocked_by_static_obstacles(self, zone: NormalizedZone) -> bool:
+        """ゾーン内占有率が上限超ならTrueを返す。地図未受信時は検証しない。"""
+        with self._lock:
+            grid = self._latest_map
+        if grid is None:
+            self.get_logger().warn(
+                '地図未受信のため占有検証を省略します',
+                throttle_duration_sec=10.0,
+            )
+            return False
+        info = grid.info
+        occ = zone_occupancy(
+            info.width, info.height, info.resolution,
+            info.origin.position.x, info.origin.position.y,
+            grid.data, zone.points,
+        )
+        if occ.inside_cells == 0:
+            self.get_logger().warn('ゾーンが地図範囲外のため占有検証を省略します')
+            return False
+        limit = self._float_param('max_occupied_ratio', 0.05)
+        self.get_logger().info(
+            f'ゾーン内占有率: {occ.occupied_ratio:.3f} '
+            f'(unknown: {occ.unknown_ratio:.3f}, 上限: {limit:.3f})'
+        )
+        return occ.occupied_ratio > limit
+
     def _on_zone(self, msg: PolygonStamped) -> None:
         """受信ゾーンを検証し、Nav2へ最新の実行要求を送る。"""
         min_vertices = self._int_param('min_vertices', 3)
@@ -159,6 +215,13 @@ class CoverageBridge(Node):
             self.get_logger().error(f'不正なゾーンのため無視します: {e}')
             self._publish_state(STATE_FAILED_INVALID_ZONE)
             return
+        if self._bool_param('check_map_occupancy', True):
+            if self._zone_blocked_by_static_obstacles(zone):
+                self.get_logger().error(
+                    'ゾーン内に静的障害物が多いため無視します'
+                )
+                self._publish_state(STATE_FAILED_INVALID_ZONE)
+                return
         self._cancel_current_goal()
         with self._lock:
             self._pending_zone = zone

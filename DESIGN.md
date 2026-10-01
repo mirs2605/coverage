@@ -23,15 +23,21 @@ Fields2Coverベース) に引き渡す。
 - `opennav_coverage/coverage_server`: Nav2 Task Server。swath/route/path生成
 - `opennav_coverage_navigator/CoverageNavigator`: bt_navigatorプラグイン。
   `navigate_complete_coverage` アクションを公開する
-- BT XMLは純正デフォルト
-  (`opennav_coverage_bt/behavior_trees/navigate_w_basic_complete_coverage.xml`)
-  を使う。本パッケージ独自のBTは持たない
+- BT XMLは本パッケージ独自の
+  (`behavior_trees/navigate_coverage_w_recovery.xml`) を既定で使う。
+  構成はNav2標準の追従・回復パターンに準拠する。
+  カバレージ開始点までは `ComputePathToPose` (GridBased＋costmap) で
+  静的障害物を避けて接近し、追従中は `FollowPath` (CoverageController) を
+  `RecoveryNode` (costmapクリア・Spin・Wait・BackUp) で囲んで
+  リアルタイムの障害物回避・回復を行う。
+  純正デフォルトに戻す場合はlaunch引数 `behavior_tree` を空文字にする
 
 ## 3. I/F・可観測性
 
 | 方向 | 名前 | 型・備考 |
 |-----|------|---------|
-| 購読 | `/cleaning_zone` | `PolygonStamped`, QoS 10 |
+| 購読 | `/cleaning_zone` | `PolygonStamped`, QoS depth 10 |
+| 購読 | `/map` | `OccupancyGrid`, transient local。静的障害物の事前検証用 |
 | 公開 | `/coverage/state` | `std_msgs/String` (`DONE` / `CANCELED` / `FAILED` / `FAILED_INVALID_ZONE` / `FAILED_REJECTED` / `WAITING_NAV_SERVER` / `WAITING_NAV_RETRY n/m`) |
 | 送出 | `navigate_complete_coverage` | `opennav_coverage_msgs/NavigateCompleteCoverage` |
 | 可視化 | `/coverage_server/coverage_plan` | `nav_msgs/Path` (RViz緑) |
@@ -56,6 +62,8 @@ bridge (`coverage_bridge`):
 | `behavior_tree` | `""` | BT上書き(空=純正デフォルト) |
 | `retry_limit` | `3` | 拒否・実行失敗の連続上限（受理ではリセットしない） |
 | `backoff_sec` | `5.0` | 再送間隔 [s] |
+| `check_map_occupancy` | `true` | ゾーン内占有率の事前検証の有効化 |
+| `max_occupied_ratio` | `0.05` | 拒否する占有率の上限。unknownは不問 |
 
 server不在の確認は非ブロッキングで行い、1.0s周期タイマーが再送する。
 同一state文字列の連続publishは抑止する。
@@ -75,6 +83,7 @@ coverage_server (`mirs/.../nav2_params.yaml` の `coverage_server` 節が単一�
 ## 5. エッジケース
 
 - 頂点数不足・非有限値 → ロボットを動かさず `FAILED_INVALID_ZONE`
+- ゾーン内占有率が上限超 → `FAILED_INVALID_ZONE`（地図未受信・範囲外は検証省略）
 - Nav2サーバ不在 → `WAITING_NAV_SERVER` で待機(1秒周期再試行)
 - ゴール拒否 → `WAITING_NAV_RETRY n/3`、上限で `FAILED_REJECTED`
 - 実行失敗(abort等の非成功終了) → `WAITING_NAV_RETRY n/3`、上限で `FAILED`

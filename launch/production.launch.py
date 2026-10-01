@@ -28,6 +28,8 @@ def generate_launch_description():
 
     default_map = os.path.join(mirs_share, 'maps', 'mirs_map.yaml')
     nav2_params = os.path.join(mirs_share, 'config', 'navigation', 'nav2_params.yaml')
+    default_behavior_tree = os.path.join(
+        coverage_share, 'behavior_trees', 'navigate_coverage_w_recovery.xml')
     rviz_config = os.path.join(coverage_share, 'rviz', 'coverage.rviz')
 
     args = [
@@ -50,7 +52,8 @@ def generate_launch_description():
         _arg('slam', 'False', 'Set True for SLAM mode (no map_server)'),
         _arg('zone_topic', '/cleaning_zone'),
         _arg('state_topic', '/coverage/state'),
-        _arg('behavior_tree', '', 'BT XML override (empty=server default)'),
+        _arg('behavior_tree', default_behavior_tree,
+             'BT XML override (default=recovery BT, empty=server default)'),
     ]
 
     # enable_hardware=trueのときESP32・LiDAR・TF関連のlaunchを含める。
@@ -115,15 +118,18 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
     )
 
-    # enable_ble=trueのときBLE受信ノードからcleaning_zoneをpublishする。
+    # enable_ble=trueのときBLE受信ノードを起動する。
+    # cleaning_zone_topic／initial_pose_topicでそれぞれの配信先を上書きできる。
+    # initial_poseはAMCLの/initalposeへ直接届く（coverage_bridgeを経由しない）。
     ble_receiver = Node(
         package='ble_server',
         executable='ble_receiver_node',
         name='ble_receiver_node',
         output='screen',
         parameters=[{
-            'topic_name': LaunchConfiguration('zone_topic'),
             'default_frame_id': 'map',
+            'cleaning_zone_topic': LaunchConfiguration('zone_topic'),
+            'initial_pose_topic': '/initialpose',
             'use_sim_time': LaunchConfiguration('use_sim_time'),
         }],
         condition=IfCondition(LaunchConfiguration('enable_ble')),

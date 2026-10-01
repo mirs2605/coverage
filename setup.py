@@ -12,6 +12,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/coverage.launch.py', 'launch/production.launch.py']),
         ('share/' + package_name + '/rviz', ['rviz/coverage.rviz']),
+        ('share/' + package_name + '/behavior_trees', ['behavior_trees/navigate_coverage_w_recovery.xml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
