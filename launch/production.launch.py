@@ -55,6 +55,9 @@ def generate_launch_description():
         _arg('use_rviz', 'true', 'Start RViz with coverage.rviz'),
         _arg('esp_port', '/dev/ttyUSB1'),
         _arg('lidar_port', '/dev/ttyUSB0'),
+        _arg('lidar_baudrate', '256000', 'LiDAR baudrate'),
+        _arg('ekf_config_file', os.path.join(mirs_share, 'config', 'ekf', 'ekf_params.yaml'),
+             'EKF config file.'),
         _arg('enable_lidar', 'true'),
         _arg('enable_micro_ros', 'true'),
         _arg('enable_hardware', 'true', 'Include mirs_hardware.launch.py'),
@@ -80,6 +83,8 @@ def generate_launch_description():
         launch_arguments={
             'esp_port': LaunchConfiguration('esp_port'),
             'lidar_port': LaunchConfiguration('lidar_port'),
+            'lidar_baudrate': LaunchConfiguration('lidar_baudrate'),
+            'ekf_config_file': LaunchConfiguration('ekf_config_file'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'enable_lidar': LaunchConfiguration('enable_lidar'),
             'enable_micro_ros': LaunchConfiguration('enable_micro_ros'),
