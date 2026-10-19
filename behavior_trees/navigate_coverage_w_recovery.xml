@@ -1,0 +1,42 @@
+<!--
+  MIRS coverage BT: compute coverage, approach start via planner (costmap-aware),
+  then follow the coverage path with Nav2 standard recovery.
+
+  - ComputePathToPose uses GridBased + costmaps, so static obstacles on the way
+    to the coverage start are routed around at plan time.
+  - Obstacles met while following are handled reactively: DWB BaseObstacle
+    critic steers locally, collision_monitor guards the footprint, and this
+    RecoveryNode clears costmaps / spins / waits / backs up before retrying.
+  - Coverage swaths themselves are pure geometry (Fields2Cover); cells known
+    occupied at request time are rejected upstream by coverage_bridge map check.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="CoverageWithRecovery">
+      <!-- Compute path to cover field -->
+      <ComputeCoveragePath nav_path="{path}" polygons="{field_polygon}" polygons_frame_id="{polygon_frame_id}" error_code_id="{compute_coverage_error_code}"/>
+
+      <!-- Go to start of coverage path along a costmap-aware plan -->
+      <GetPoseFromPath path="{path}" pose="{start_pose}" index="0"/>
+      <ComputePathToPose goal="{start_pose}" path="{path_to_start}" planner_id="GridBased" error_code_id="{compute_path_error_code}"/>
+      <FollowPath path="{path_to_start}" controller_id="FollowPath" error_code_id="{follow_path_error_code}"/>
+
+      <!-- Follow computed coverage path with recovery -->
+      <RecoveryNode number_of_retries="6" name="FollowCoverageRecovery">
+        <FollowPath path="{path}" controller_id="CoverageController" error_code_id="{follow_path_error_code}"/>
+        <ReactiveFallback name="CoverageRecoveryFallback">
+          <GoalUpdated/>
+          <RoundRobin name="CoverageRecoveryActions">
+            <Sequence name="ClearingActions">
+              <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+              <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+            </Sequence>
+            <Spin spin_dist="1.57"/>
+            <Wait wait_duration="5.0"/>
+            <BackUp backup_dist="0.30" backup_speed="0.15"/>
+          </RoundRobin>
+        </ReactiveFallback>
+      </RecoveryNode>
+    </Sequence>
+  </BehaviorTree>
+</root>

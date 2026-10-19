@@ -1,0 +1,415 @@
+#!/usr/bin/env python3
+"""cleaning_zoneをNavigateCompleteCoverageアクションへ中継するROS 2ノード。
+
+入力ポリゴンの検証、Nav2ゴール送信、進捗と終了状態の通知を行う。
+経路生成と追従はNav2のcoverage_serverとCoverageNavigatorが担当する。
+"""
+
+from __future__ import annotations
+
+import functools
+import threading
+import time
+from typing import Any
+
+import rclpy
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import Point32, Polygon, PolygonStamped
+from nav_msgs.msg import OccupancyGrid
+from opennav_coverage_msgs.action import NavigateCompleteCoverage
+from rclpy.action import ActionClient
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import String
+
+from coverage.zone_field import NormalizedZone
+from coverage.zone_map import zone_occupancy
+from coverage.retry_policy import RetryPolicy
+
+
+# /coverage/state 通知の terminal 状態文字列。
+STATE_DONE = 'DONE'
+STATE_CANCELED = 'CANCELED'
+STATE_FAILED = 'FAILED'
+STATE_FAILED_INVALID_ZONE = 'FAILED_INVALID_ZONE'
+STATE_FAILED_REJECTED = 'FAILED_REJECTED'
+STATE_WAITING_NAV_SERVER = 'WAITING_NAV_SERVER'
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    """ROSパラメータ値をfloatへ変換し、変換不能時は既定値を返す。"""
+    try:
+        if isinstance(value, str):
+            value = value.strip().strip('"').strip("'")
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """ROSパラメータ値を整数へ変換し、変換不能時は既定値を返す。"""
+    try:
+        if isinstance(value, str):
+            value = value.strip().strip('"').strip("'")
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_str(value: Any, default: str) -> str:
+    """ROSパラメータ値を文字列へ変換し、Noneには既定値を返す。"""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+class CoverageBridge(Node):
+    """清掃ゾーンのNav2実行要求と状態通知を管理する。
+
+    ``/cleaning_zone`` の最新値を送信し、サーバ不在やゴール拒否時は再試行する。
+    新しいゾーンの受信時は実行中ゴールをキャンセルして最新値を優先する。
+    """
+
+    def __init__(self) -> None:
+        """topic、action client、再試行タイマーを初期化する。"""
+        super().__init__('coverage_bridge')
+        self.declare_parameter('zone_topic', '/cleaning_zone')
+        self.declare_parameter('state_topic', '/coverage/state')
+        self.declare_parameter('action_name', 'navigate_complete_coverage')
+        self.declare_parameter('frame_id', 'map')
+        self.declare_parameter('behavior_tree', '')
+        self.declare_parameter('min_vertices', 3)
+        self.declare_parameter('retry_limit', 3)
+        self.declare_parameter('backoff_sec', 5.0)
+        self.declare_parameter('check_map_occupancy', True)
+        self.declare_parameter('max_occupied_ratio', 0.05)
+        # use_sim_timeはrclpyが自動宣言するため、ここでは重複して宣言しない。
+
+        raw = {n: self.get_parameter(n).value for n in (
+            'zone_topic', 'state_topic', 'action_name', 'frame_id',
+            'behavior_tree',
+        )}
+        self._zone_topic = _coerce_str(raw['zone_topic'], '/cleaning_zone')
+        self._state_topic = _coerce_str(raw['state_topic'], '/coverage/state')
+        self._action_name = _coerce_str(
+            raw['action_name'], 'navigate_complete_coverage')
+        self._default_frame = _coerce_str(raw['frame_id'], 'map')
+        self._behavior_tree = _coerce_str(raw['behavior_tree'], '')
+
+        self._pending_zone: NormalizedZone | None = None
+        self._lock = threading.Lock()
+        self._goal_handle = None
+        self._executing = False
+        # 最新世代以外の非同期応答を破棄し、goal切替後の状態上書きを防ぐ。
+        self._generation = 0
+        # 拒否・実行失敗の連続計数。受理ではリセットしない。
+        self._retry = RetryPolicy()
+        self._sync_retry_params()
+        # 同一state文字列の連続publishを抑止する。
+        self._last_state = ''
+
+        # state通知はQoS depth 10でpublishする。
+        self._state_pub = self.create_publisher(String, self._state_topic, 10)
+        # 入力ゾーンをQoS depth 10で受信する。
+        self.create_subscription(
+            PolygonStamped, self._zone_topic, self._on_zone, 10
+        )
+        # 静的障害物の事前検証用に/mapをtransient localで受信する。
+        map_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self._latest_map: OccupancyGrid | None = None
+        self.create_subscription(
+            OccupancyGrid, '/map', self._on_map, map_qos
+        )
+        self._nav_client: ActionClient = ActionClient(
+            self, NavigateCompleteCoverage, self._action_name
+        )
+        # 保留ゾーンを1.0s周期で再送可能か確認する。
+        self.create_timer(1.0, self._on_retry_timer)
+
+        self.get_logger().info(
+            f'coverage_bridge started: zone={self._zone_topic} '
+            f'action={self._action_name}'
+        )
+
+    def _bool_param(self, name: str, default: bool) -> bool:
+        """指定パラメータをboolとして取得する。"""
+        value = self.get_parameter(name).value
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ('true', '1', 'yes')
+        return default if value is None else bool(value)
+
+    def _float_param(self, name: str, default: float) -> float:
+        """指定パラメータをfloatとして取得する。"""
+        return _coerce_float(self.get_parameter(name).value, default)
+
+    def _int_param(self, name: str, default: int) -> int:
+        """指定パラメータをintとして取得する。"""
+        return _coerce_int(self.get_parameter(name).value, default)
+
+    def _sync_retry_params(self) -> None:
+        """再送上限と待機秒数 [s] をROSパラメータへ追従させる。"""
+        with self._lock:
+            self._retry.limit = self._int_param('retry_limit', 3)
+            self._retry.backoff_sec = self._float_param('backoff_sec', 5.0)
+
+    def _publish_state(self, text: str) -> None:
+        """coverage状態文字列をstate topicへpublishする。同一文言の連続送信は抑止する。"""
+        with self._lock:
+            if text == self._last_state:
+                return
+            self._last_state = text
+        msg = String()
+        msg.data = text
+        self._state_pub.publish(msg)
+
+    def _on_map(self, msg: OccupancyGrid) -> None:
+        """事前検証用に最新の地図を保持する。"""
+        with self._lock:
+            self._latest_map = msg
+
+    def _zone_blocked_by_static_obstacles(self, zone: NormalizedZone) -> bool:
+        """ゾーン内占有率が上限超ならTrueを返す。地図未受信時は検証しない。"""
+        with self._lock:
+            grid = self._latest_map
+        if grid is None:
+            self.get_logger().warn(
+                '地図未受信のため占有検証を省略します',
+                throttle_duration_sec=10.0,
+            )
+            return False
+        info = grid.info
+        occ = zone_occupancy(
+            info.width, info.height, info.resolution,
+            info.origin.position.x, info.origin.position.y,
+            grid.data, zone.points,
+        )
+        if occ.inside_cells == 0:
+            self.get_logger().warn('ゾーンが地図範囲外のため占有検証を省略します')
+            return False
+        limit = self._float_param('max_occupied_ratio', 0.05)
+        self.get_logger().info(
+            f'ゾーン内占有率: {occ.occupied_ratio:.3f} '
+            f'(unknown: {occ.unknown_ratio:.3f}, 上限: {limit:.3f})'
+        )
+        return occ.occupied_ratio > limit
+
+    def _on_zone(self, msg: PolygonStamped) -> None:
+        """受信ゾーンを検証し、Nav2へ最新の実行要求を送る。"""
+        min_vertices = self._int_param('min_vertices', 3)
+        try:
+            zone = NormalizedZone.from_points(
+                frame_id=msg.header.frame_id or self._default_frame,
+                points=[(p.x, p.y) for p in msg.polygon.points],
+                min_vertices=min_vertices,
+            )
+        except ValueError as e:
+            self.get_logger().error(f'不正なゾーンのため無視します: {e}')
+            self._publish_state(STATE_FAILED_INVALID_ZONE)
+            return
+        if self._bool_param('check_map_occupancy', True):
+            if self._zone_blocked_by_static_obstacles(zone):
+                self.get_logger().error(
+                    'ゾーン内に静的障害物が多いため無視します'
+                )
+                self._publish_state(STATE_FAILED_INVALID_ZONE)
+                return
+        self._cancel_current_goal()
+        with self._lock:
+            self._pending_zone = zone
+        self._sync_retry_params()
+        self._retry.reset()
+        self._try_send(zone)
+
+    def _on_retry_timer(self) -> None:
+        """実行中要求がなく再試行時刻を過ぎた場合、保留ゾーンを再送する。"""
+        with self._lock:
+            pending = self._pending_zone
+            executing = self._executing
+        self._sync_retry_params()
+        if pending is not None and not executing and self._retry.ready(time.monotonic()):
+            self._try_send(pending)
+
+    def _make_goal(self, zone: NormalizedZone) -> NavigateCompleteCoverage.Goal:
+        """正規化済みゾーンからCoverageNavigatorのgoalを組み立てる。"""
+        goal = NavigateCompleteCoverage.Goal()
+        goal.frame_id = zone.frame_id
+        poly = Polygon()
+        for x, y in zone.points:
+            pt = Point32()
+            pt.x, pt.y = x, y
+            pt.z = 0.0
+            poly.points.append(pt)
+        # Fields2Coverは閉路(始点==終点)を要求するため、始点を末尾へ追加する。
+        # 未閉形のまま送るとcoverage_serverがINVALID_COORDS(803)で破棄する。
+        if zone.points:
+            pt = Point32()
+            pt.x, pt.y = zone.points[0][0], zone.points[0][1]
+            pt.z = 0.0
+            poly.points.append(pt)
+        goal.polygons.append(poly)
+        if self._behavior_tree:
+            goal.behavior_tree = self._behavior_tree
+        return goal
+
+    def _cancel_current_goal(self) -> None:
+        """現在のgoalを無効化し、受理済みならNav2へcancelを要求する。"""
+        with self._lock:
+            self._generation += 1
+            handle = self._goal_handle
+            self._goal_handle = None
+            self._executing = False
+        if handle is not None:
+            try:
+                handle.cancel_goal_async()
+                self.get_logger().info('実行中ゴールをキャンセルしました')
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().warn(f'ゴールキャンセル失敗: {e}')
+
+    def _try_send(self, zone: NormalizedZone) -> None:
+        """action serverを確認し、ゾーンgoalを非同期で送信する。
+
+        server不在の確認は非ブロッキングで行い、1.0s周期タイマーが再送する。
+        """
+        if not self._nav_client.wait_for_server(timeout_sec=0.0):
+            self.get_logger().warn(
+                f'{self._action_name}サーバ不在のため再試行します',
+                throttle_duration_sec=10.0,
+            )
+            self._publish_state(STATE_WAITING_NAV_SERVER)
+            return
+        with self._lock:
+            self._generation += 1
+            gen = self._generation
+            self._executing = True
+        send_future = self._nav_client.send_goal_async(
+            self._make_goal(zone),
+            feedback_callback=functools.partial(self._on_feedback, gen),
+        )
+        send_future.add_done_callback(functools.partial(self._on_goal_response, gen))
+
+    def _stale(self, gen: int) -> bool:
+        """指定世代が最新でなく、結果を破棄すべきならTrueを返す。"""
+        with self._lock:
+            return gen != self._generation
+
+    def _on_feedback(self, gen: int, msg) -> None:
+        """最新goalの残距離とリカバリ回数を記録する。"""
+        if self._stale(gen):
+            return
+        remaining = msg.feedback.distance_remaining
+        self.get_logger().info(
+            f'清掃中: 残り約{remaining:.1f}m '
+            f'(recoveries={msg.feedback.number_of_recoveries})',
+            throttle_duration_sec=10.0,
+        )
+
+    def _on_goal_response(self, gen: int, future) -> None:
+        """goal受理結果を処理し、受理時は結果コールバックを登録する。"""
+        if self._stale(gen):
+            return
+        try:
+            handle = future.result()
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f'ゴール送信エラー: {e}')
+            with self._lock:
+                self._executing = False
+            self._publish_state(STATE_FAILED)
+            return
+        if handle is None or not handle.accepted:
+            self._register_setback(goal_rejected=True)
+            return
+        with self._lock:
+            self._goal_handle = handle
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(functools.partial(self._on_nav_result, gen))
+
+    def _register_setback(self, goal_rejected: bool) -> None:
+        """拒否・実行失敗を計数し、上限到達で諦めてterminal状態を通知する。
+
+        受理時のリセットは行わない。受理後に失敗が続けば上限で諦める。
+        """
+        self._sync_retry_params()
+        give_up = self._retry.record_failure(time.monotonic())
+        if give_up:
+            with self._lock:
+                self._pending_zone = None
+        if goal_rejected:
+            count, limit = self._retry.failures, self._retry.limit
+            if give_up:
+                self.get_logger().error(
+                    f'Nav2にゴールを{count}回拒否されました。諦めます。'
+                    '初期位置(2D Pose Estimate)・lifecycle(bt_navigator active)・'
+                    'TF(map->base_footprint)を確認してください。'
+                )
+                self._publish_state(STATE_FAILED_REJECTED)
+                return
+            self.get_logger().warn(
+                f'Nav2にゴールを拒否されました({count}/{limit})。'
+                f'{self._retry.backoff_sec:.0f}s後に再送します。',
+                throttle_duration_sec=10.0,
+            )
+            self._publish_state(self._retry.state_text())
+            return
+        if give_up:
+            self.get_logger().error(
+                f'Nav2実行が{self._retry.failures}回失敗しました。諦めます。'
+            )
+            self._publish_state(STATE_FAILED)
+            return
+        self.get_logger().warn(
+            f'Nav2実行が失敗しました({self._retry.state_text()})。'
+            f'{self._retry.backoff_sec:.0f}s後に再送します。',
+            throttle_duration_sec=10.0,
+        )
+        self._publish_state(self._retry.state_text())
+
+    def _on_nav_result(self, gen: int, future) -> None:
+        """最新goalの終了状態をDONE、CANCELED、失敗として通知する。"""
+        if self._stale(gen):
+            return
+        with self._lock:
+            self._executing = False
+        try:
+            status = future.result().status
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f'Nav2実行エラー: {e}')
+            self._publish_state(STATE_FAILED)
+            return
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().info('清掃完了(DONE)')
+            self._publish_state(STATE_DONE)
+            with self._lock:
+                self._pending_zone = None
+            self._retry.reset()
+        elif status == GoalStatus.STATUS_CANCELED:
+            self.get_logger().info('清掃キャンセル(CANCELED)')
+            self._publish_state(STATE_CANCELED)
+        else:
+            self.get_logger().error(f'清掃失敗(status={status})')
+            self._register_setback(goal_rejected=False)
+
+
+def main(args=None) -> None:
+    """coverage_bridgeを初期化し、ROS 2イベントを処理する。"""
+    rclpy.init(args=args)
+    node = CoverageBridge()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
