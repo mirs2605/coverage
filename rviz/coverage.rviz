@@ -1,4 +1,3 @@
-# 清掃ゾーン、coverage経路、Nav2計画とセンサ情報を可視化するRViz設定。
 Panels:
   - Class: rviz_common/Displays
     Help Height: 0
@@ -7,13 +6,17 @@ Panels:
       Expanded:
         - /Global Options1
       Splitter Ratio: 0.5
-    Tree Height: 300
+    Tree Height: 891
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
+    Expanded:
+      - /2D Goal Pose1
     Name: Tool Properties
     Splitter Ratio: 0.5
   - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
     Name: Views
     Splitter Ratio: 0.5
 Visualization Manager:
@@ -42,13 +45,30 @@ Visualization Manager:
       Filter (blacklist): ""
       Filter (whitelist): ""
       Frame Timeout: 15
+      Frames:
+        All Enabled: true
+        base_footprint:
+          Value: true
+        base_link:
+          Value: true
+        laser:
+          Value: true
+        map:
+          Value: true
+        odom:
+          Value: true
       Marker Scale: 1
       Name: TF
       Show Arrows: true
       Show Axes: true
       Show Names: false
       Tree:
-        {}
+        map:
+          odom:
+            base_footprint:
+              base_link:
+                laser:
+                  {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -112,9 +132,9 @@ Visualization Manager:
       Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
-      Max Intensity: 0
+      Max Intensity: 47
       Min Color: 0; 0; 0
-      Min Intensity: 0
+      Min Intensity: 47
       Name: LaserScan
       Position Transformer: XYZ
       Selectable: true
@@ -171,7 +191,7 @@ Visualization Manager:
       Offset:
         X: 0
         Y: 0
-        Z: 0.05
+        Z: 0.05000000074505806
       Pose Color: 255; 85; 255
       Pose Style: Arrows
       Radius: 0.029999999329447746
@@ -189,7 +209,7 @@ Visualization Manager:
       Enabled: true
       Name: CoverageSwaths
       Namespaces:
-        "": true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -253,16 +273,23 @@ Visualization Manager:
       Topic:
         Depth: 5
         Durability Policy: Volatile
-        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /clicked_point
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: goal_pose
   Transformation:
     Current:
       Class: rviz_default_plugins/TF
   Value: true
   Views:
     Current:
+      Angle: 0
       Class: rviz_default_plugins/TopDownOrtho
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
@@ -272,16 +299,25 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 20
+      Scale: 42.41629409790039
       Target Frame: <Fixed Frame>
       Value: TopDownOrtho (rviz_default_plugins)
-      X: 0
-      Y: 0
+      X: 1.1080658435821533
+      Y: -0.28291016817092896
     Saved: ~
 Window Geometry:
-  Height: 900
+  Displays:
+    collapsed: false
+  Height: 1036
   Hide Left Dock: false
   Hide Right Dock: false
-  Width: 1400
-  X: 100
-  Y: 100
+  QMainWindow State: 000000ff00000000fd000000010000000000000156000003b6fc0200000004fb000000100044006900730070006c006100790073010000003b000003b6000000c700fffffffb0000001200530065006c0065006300740069006f006e00000001a5000000ad0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007300000001f9000000d80000005c00fffffffb0000000a00560069006500770073000000028000000171000000a000ffffff00000256000003b600000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Selection:
+    collapsed: false
+  Tool Properties:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 946
+  X: 7
+  Y: 37

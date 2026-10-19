@@ -4,7 +4,7 @@ BLE清掃ポリゴン → Nav2完全カバレージのブリッジ。CI: `pytest
 
 ## ブランチ運用
 
-- `main` / `develop` 直push禁止。`feature/*` → `develop` → `main` のPRのみ
+- `main` 直push禁止。`feature/*` → `main` のPRのみ
 - 1コミット1話題
 
 ## テスト・ビルド

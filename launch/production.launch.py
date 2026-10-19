@@ -4,33 +4,32 @@
 個別機能はlaunch引数で有効・無効を選択できる。
 """
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def _arg(name, default, description=''):
-    """launch引数を既定値と説明付きで宣言する。"""
     return DeclareLaunchArgument(name, default_value=default, description=description)
 
 
 def generate_launch_description():
-    """MIRSの各launchとROSノードを条件付きで構成して返す。"""
-    mirs_share = get_package_share_directory('mirs')
-    nav2_bringup_dir = get_package_share_directory('nav2_bringup')
-    coverage_share = get_package_share_directory('coverage')
+    mirs_share = FindPackageShare('mirs')
+    nav2_bringup_share = FindPackageShare('nav2_bringup')
+    coverage_share = FindPackageShare('coverage')
 
-    default_map = os.path.join(mirs_share, 'maps', 'mirs_map.yaml')
-    nav2_params = os.path.join(mirs_share, 'config', 'navigation', 'nav2_params.yaml')
-    default_behavior_tree = os.path.join(
-        coverage_share, 'behavior_trees', 'navigate_coverage_w_recovery.xml')
-    rviz_config = os.path.join(coverage_share, 'rviz', 'coverage.rviz')
+    default_map = PathJoinSubstitution([mirs_share, 'maps', 'youkanato.yaml'])
+    ekf_config_file = PathJoinSubstitution(
+        [mirs_share, 'config', 'ekf', 'ekf_params.yaml'])
+    nav2_params = PathJoinSubstitution(
+        [mirs_share, 'config', 'navigation', 'nav2_params.yaml'])
+    default_behavior_tree = PathJoinSubstitution(
+        [coverage_share, 'behavior_trees', 'navigate_coverage_w_recovery.xml'])
+    rviz_config = PathJoinSubstitution([coverage_share, 'rviz', 'coverage.rviz'])
 
     args = [
         _arg('map', default_map, 'Map yaml for Nav2'),
@@ -38,6 +37,8 @@ def generate_launch_description():
         _arg('use_rviz', 'true', 'Start RViz with coverage.rviz'),
         _arg('esp_port', '/dev/ttyUSB1'),
         _arg('lidar_port', '/dev/ttyUSB0'),
+        _arg('lidar_baudrate', '256000'),
+        _arg('lidar_frame', 'laser'),
         _arg('enable_lidar', 'true'),
         _arg('enable_micro_ros', 'true'),
         _arg('enable_hardware', 'true', 'Include mirs_hardware.launch.py'),
@@ -46,7 +47,10 @@ def generate_launch_description():
         _arg('enable_ble', 'true', 'Start ble_receiver_node (falseで手動テスト用)'),
         _arg('enable_bridge', 'true', 'Start coverage_bridge'),
         _arg('enable_ekf_local', 'true', 'EKF odom->base_footprint (off時はstatic TFで代用可)'),
-        _arg('enable_static_odom_tf', 'false', 'Static odom->base_link (EKFと排他。実機なし試験用)'),
+        _arg('ekf_config_file', ekf_config_file, 'EKF parameter file'),
+        _arg('enable_static_base_link_to_laser_tf', 'true'),
+        _arg('enable_static_base_footprint_to_base_link_tf', 'true'),
+        _arg('enable_static_base_link_to_imu_link_tf', 'false'),
         _arg('autostart', 'true', 'Autostart Nav2 lifecycle'),
         # nav2_bringupのPythonExpressionで評価されるためPython bool表記を渡す。
         _arg('slam', 'False', 'Set True for SLAM mode (no map_server)'),
@@ -56,19 +60,30 @@ def generate_launch_description():
              'BT XML override (default=recovery BT, empty=server default)'),
     ]
 
-    # enable_hardware=trueのときESP32・LiDAR・TF関連のlaunchを含める。
-    mirs_hardware = IncludeLaunchDescription(
+    # hardwareと基礎ノードを起動する。Nav2とRVizはcoverage側で管理する。
+    mirs_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(mirs_share, 'launch', 'mirs_hardware.launch.py')
+            PathJoinSubstitution([mirs_share, 'launch', 'mirs_launch.py'])
         ),
         launch_arguments={
             'esp_port': LaunchConfiguration('esp_port'),
             'lidar_port': LaunchConfiguration('lidar_port'),
+            'lidar_baudrate': LaunchConfiguration('lidar_baudrate'),
+            'lidar_frame': LaunchConfiguration('lidar_frame'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'enable_lidar': LaunchConfiguration('enable_lidar'),
             'enable_micro_ros': LaunchConfiguration('enable_micro_ros'),
             'enable_ekf_local': LaunchConfiguration('enable_ekf_local'),
-            'enable_static_odom_tf': LaunchConfiguration('enable_static_odom_tf'),
+            'ekf_config_file': LaunchConfiguration('ekf_config_file'),
+            'enable_static_base_link_to_laser_tf':
+                LaunchConfiguration('enable_static_base_link_to_laser_tf'),
+            'enable_static_base_footprint_to_base_link_tf':
+                LaunchConfiguration('enable_static_base_footprint_to_base_link_tf'),
+            'enable_static_base_link_to_imu_link_tf':
+                LaunchConfiguration('enable_static_base_link_to_imu_link_tf'),
+            'enable_rviz': 'false',
+            'enable_nav2': 'false',
+            'enable_slam_toolbox': 'false',
         }.items(),
         condition=IfCondition(LaunchConfiguration('enable_hardware')),
     )
@@ -76,7 +91,8 @@ def generate_launch_description():
     # enable_nav2=trueのとき地図またはSLAM設定でNav2を起動する。
     nav2_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(nav2_bringup_dir, 'launch', 'bringup_launch.py')
+            PathJoinSubstitution(
+                [nav2_bringup_share, 'launch', 'bringup_launch.py'])
         ),
         launch_arguments={
             'map': LaunchConfiguration('map'),
@@ -165,7 +181,7 @@ def generate_launch_description():
     return LaunchDescription([
         *args,
         LogInfo(msg='[production] starting hardware...'),
-        mirs_hardware,
+        mirs_bringup,
         LogInfo(msg='[production] starting Nav2...'),
         nav2_bringup,
         LogInfo(msg='[production] starting coverage_server/ble/bridge/rviz...'),
