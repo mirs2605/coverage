@@ -1,4 +1,4 @@
-# coverage (ROS 2 Package, v0.2.0)
+# coverage (ROS 2 Package)
 
 BLEで受信した清掃範囲ポリゴン (`/cleaning_zone`, `geometry_msgs/PolygonStamped`)
 を、Nav2の完全カバレージ機能 ([opennav_coverage](https://github.com/open-navigation/opennav_coverage))
