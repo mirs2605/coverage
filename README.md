@@ -62,6 +62,32 @@ Nav2計画 (`/plan`, 赤)を確認できます。
 | 公開 | `/coverage/state` | `std_msgs/String` |
 | 送出 | `navigate_complete_coverage` | `opennav_coverage_msgs/NavigateCompleteCoverage` アクション |
 
+### 診断トピック
+
+`coverage.launch.py` と `production.launch.py` は既定で `coverage_monitor` を起動する。
+`coverage_3d.launch.py` は3D点群の監視を追加する。
+
+| トピック | 型 | 内容 |
+|---|---|---|
+| `/coverage/phase` | `std_msgs/String` | bridgeの最新段階。transient localなので後から購読しても取得できる |
+| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | `coverage/bridge` の占有率・goal ID・feedback・再試行理由、`coverage/topic/*` の実時間Hz・最終受信からの秒数・ゾーン受信後の件数、TFとシミュレーション速度 |
+
+`/diagnostics` は1.0s周期で更新する。`NO_PUBLISHER` は発行元なし、
+`NO_MESSAGE` は発行元があるが未受信、`STALE` は連続入力の途絶、
+`NON_MONOTONIC_STAMP` は直近30秒以内にヘッダー時刻の重複または逆行、
+`MULTIPLE_PUBLISHERS` はセンサー系トピックに複数の発行元を検出したことを表す。
+経路と速度指令はイベント型なので、未受信を異常扱いせず `messages_since_zone` で投入後の流れを確認する。
+Foxgloveでは `/diagnostics` を Diagnostics – Summary (ROS) パネルに指定し、
+`/coverage/phase.data` を State Transitions パネルに指定する。
+
+```bash
+ROS_DOMAIN_ID=91 ros2 topic echo /coverage/phase --qos-durability transient_local --once
+ROS_DOMAIN_ID=91 ros2 topic echo /diagnostics
+```
+
+3Dシミュレーションでbridgeと監視ノードだけを別途起動する場合は
+`monitor_profile:=3d` を指定する。監視を止める場合は `enable_monitor:=false` を指定する。
+
 ## テスト
 
 ```bash

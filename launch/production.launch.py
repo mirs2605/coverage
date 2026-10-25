@@ -19,7 +19,6 @@ def _arg(name, default, description=''):
 
 def generate_launch_description():
     mirs_share = FindPackageShare('mirs')
-    nav2_bringup_share = FindPackageShare('nav2_bringup')
     coverage_share = FindPackageShare('coverage')
 
     default_map = PathJoinSubstitution([mirs_share, 'maps', 'youkanato.yaml'])
@@ -33,6 +32,7 @@ def generate_launch_description():
 
     args = [
         _arg('map', default_map, 'Map yaml for Nav2'),
+        _arg('nav2_params_file', nav2_params, 'Nav2 parameter file'),
         _arg('use_sim_time', 'false'),
         _arg('use_rviz', 'true', 'Start RViz with coverage.rviz'),
         _arg('esp_port', '/dev/ttyUSB1'),
@@ -41,11 +41,12 @@ def generate_launch_description():
         _arg('lidar_frame', 'laser'),
         _arg('enable_lidar', 'true'),
         _arg('enable_micro_ros', 'true'),
-        _arg('enable_hardware', 'true', 'Include mirs_hardware.launch.py'),
+        _arg('enable_hardware', 'true', 'Start mirs base and sensor nodes'),
         _arg('enable_nav2', 'true', 'Include nav2_bringup'),
         _arg('enable_coverage_server', 'true', 'Start opennav_coverage server'),
         _arg('enable_ble', 'true', 'Start ble_receiver_node (falseで手動テスト用)'),
         _arg('enable_bridge', 'true', 'Start coverage_bridge'),
+        _arg('enable_monitor', 'true', 'Publish coverage diagnostics'),
         _arg('enable_ekf_local', 'true', 'EKF odom->base_footprint (off時はstatic TFで代用可)'),
         _arg('ekf_config_file', ekf_config_file, 'EKF parameter file'),
         _arg('enable_static_base_link_to_laser_tf', 'true'),
@@ -60,7 +61,7 @@ def generate_launch_description():
              'BT XML override (default=recovery BT, empty=server default)'),
     ]
 
-    # hardwareと基礎ノードを起動する。Nav2とRVizはcoverage側で管理する。
+    # mirs_launch.py API経由で機体、Nav2、安全ゲートを起動する。
     mirs_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([mirs_share, 'launch', 'mirs_launch.py'])
@@ -71,6 +72,8 @@ def generate_launch_description():
             'lidar_baudrate': LaunchConfiguration('lidar_baudrate'),
             'lidar_frame': LaunchConfiguration('lidar_frame'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'map': LaunchConfiguration('map'),
+            'nav2_params_file': LaunchConfiguration('nav2_params_file'),
             'enable_lidar': LaunchConfiguration('enable_lidar'),
             'enable_micro_ros': LaunchConfiguration('enable_micro_ros'),
             'enable_ekf_local': LaunchConfiguration('enable_ekf_local'),
@@ -82,26 +85,12 @@ def generate_launch_description():
             'enable_static_base_link_to_imu_link_tf':
                 LaunchConfiguration('enable_static_base_link_to_imu_link_tf'),
             'enable_rviz': 'false',
-            'enable_nav2': 'false',
+            'enable_nav2': LaunchConfiguration('enable_nav2'),
             'enable_slam_toolbox': 'false',
-        }.items(),
-        condition=IfCondition(LaunchConfiguration('enable_hardware')),
-    )
-
-    # enable_nav2=trueのとき地図またはSLAM設定でNav2を起動する。
-    nav2_bringup = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [nav2_bringup_share, 'launch', 'bringup_launch.py'])
-        ),
-        launch_arguments={
-            'map': LaunchConfiguration('map'),
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'params_file': nav2_params,
             'autostart': LaunchConfiguration('autostart'),
             'slam': LaunchConfiguration('slam'),
         }.items(),
-        condition=IfCondition(LaunchConfiguration('enable_nav2')),
+        condition=IfCondition(LaunchConfiguration('enable_hardware')),
     )
 
     # coverage server設定はnav2_params.yamlを使い、時刻設定だけlaunchから渡す。
@@ -113,7 +102,7 @@ def generate_launch_description():
         name='coverage_server',
         output='screen',
         parameters=[
-            nav2_params,
+            LaunchConfiguration('nav2_params_file'),
             {'use_sim_time': LaunchConfiguration('use_sim_time')},
         ],
         condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
@@ -134,20 +123,21 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
     )
 
-    # enable_ble=trueのときBLE受信ノードを起動する。
-    # cleaning_zone_topic／initial_pose_topicでそれぞれの配信先を上書きできる。
-    # initial_poseはAMCLの/initalposeへ直接届く（coverage_bridgeを経由しない）。
-    ble_receiver = Node(
-        package='ble_server',
-        executable='ble_receiver_node',
-        name='ble_receiver_node',
-        output='screen',
-        parameters=[{
+    # BLEパッケージが公開する起動APIで、JSON受信ノードを起動する。
+    ble_receiver = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare('ble_server'), 'launch',
+                'ble_receiver.launch.py',
+            ])
+        ),
+        launch_arguments={
+            'enabled': 'true',
             'default_frame_id': 'map',
             'cleaning_zone_topic': LaunchConfiguration('zone_topic'),
             'initial_pose_topic': '/initialpose',
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-        }],
+        }.items(),
         condition=IfCondition(LaunchConfiguration('enable_ble')),
     )
 
@@ -167,6 +157,20 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('enable_bridge')),
     )
 
+    # enable_monitor=trueのとき実機のtopic・TF診断を発行する。
+    monitor = Node(
+        package='coverage',
+        executable='coverage_monitor',
+        name='coverage_monitor',
+        output='screen',
+        parameters=[{
+            'profile': 'hardware',
+            'zone_topic': LaunchConfiguration('zone_topic'),
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }],
+        condition=IfCondition(LaunchConfiguration('enable_monitor')),
+    )
+
     # use_rviz=trueのときcoverage表示設定を読み込んでRVizを起動する。
     rviz = Node(
         package='rviz2',
@@ -182,12 +186,12 @@ def generate_launch_description():
         *args,
         LogInfo(msg='[production] starting hardware...'),
         mirs_bringup,
-        LogInfo(msg='[production] starting Nav2...'),
-        nav2_bringup,
+        LogInfo(msg='[production] starting Nav2 through mirs_launch API...'),
         LogInfo(msg='[production] starting coverage_server/ble/bridge/rviz...'),
         coverage_server,
         coverage_lifecycle,
         ble_receiver,
         bridge,
+        monitor,
         rviz,
     ])

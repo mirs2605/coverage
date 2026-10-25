@@ -7,6 +7,19 @@ on:
     branches: [main, develop]
 
 jobs:
+  colcon-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+      - uses: ros-tooling/action-ros-ci@v0.4
+        with:
+          package-name: coverage
+          target-ros2-distro: jazzy
+          rosdep-skip-keys: mirs ble_server nav2_bringup fields2cover opennav_coverage opennav_coverage_navigator opennav_coverage_bt rviz2
+
   pytest:
     runs-on: ubuntu-latest
     steps:

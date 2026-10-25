@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'coverage_bridge = coverage.coverage_bridge:main',
+            'coverage_monitor = coverage.coverage_monitor:main',
         ],
     },
 )
