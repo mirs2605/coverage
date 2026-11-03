@@ -47,7 +47,7 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_static_base_link_to_laser_tf', default_value='true'),
         DeclareLaunchArgument(
             'enable_static_base_footprint_to_base_link_tf', default_value='true'),
-        DeclareLaunchArgument('enable_static_base_link_to_imu_link_tf', default_value='false'),
+        DeclareLaunchArgument('enable_static_base_link_to_imu_link_tf', default_value='true'),
         DeclareLaunchArgument(
             'enable_coverage_server', default_value='true',
             description='Start opennav_coverage server (falseでbridge単体起動)',

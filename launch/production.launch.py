@@ -51,7 +51,7 @@ def generate_launch_description():
         _arg('ekf_config_file', ekf_config_file, 'EKF parameter file'),
         _arg('enable_static_base_link_to_laser_tf', 'true'),
         _arg('enable_static_base_footprint_to_base_link_tf', 'true'),
-        _arg('enable_static_base_link_to_imu_link_tf', 'false'),
+        _arg('enable_static_base_link_to_imu_link_tf', 'true'),
         _arg('autostart', 'true', 'Autostart Nav2 lifecycle'),
         # nav2_bringupのPythonExpressionで評価されるためPython bool表記を渡す。
         _arg('slam', 'False', 'Set True for SLAM mode (no map_server)'),

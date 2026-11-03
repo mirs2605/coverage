@@ -96,3 +96,8 @@ python3 -m pytest src/original/coverage/test/ -v
 # パッケージディレクトリから
 cd src/original/coverage && python3 -m pytest test/ -v
 ```
+
+
+実機のproduction起動では、EKFと`base_link → imu_link`の取付TFを有効にします。
+車体モデルを別途起動して同じTFを配信する場合は、`enable_static_base_link_to_imu_link_tf:=false`を指定し、配信元を一つにしてください。
+シミュレーションは`enable_mirs:=false`で呼び出し、実機のTF・センサ・EKFを追加しません。
