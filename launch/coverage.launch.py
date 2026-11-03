@@ -1,4 +1,4 @@
-"""Nav2本体起動済み環境でcoverage_server、bridge、確認用RVizを起動する。
+"""Nav2本体起動済み環境でcoverage_server、BLE受信、bridge、RVizを起動する。
 
 ``enable_coverage_server:=false`` はaction serverを起動せずbridge単体で試す場合に使う。
 """
@@ -15,7 +15,7 @@ def generate_launch_description():
     """選択可能なcoverage server、bridge、RVizのlaunch記述を返す。"""
     mirs_share = FindPackageShare('mirs')
     coverage_share = FindPackageShare('coverage')
-    default_map = PathJoinSubstitution([mirs_share, 'maps', 'youkanato.yaml'])
+    default_map = PathJoinSubstitution([mirs_share, 'maps', 'es.yaml'])
     nav2_params = PathJoinSubstitution(
         [mirs_share, 'config', 'navigation', 'nav2_params.yaml'])
     ekf_config_file = PathJoinSubstitution(
@@ -26,6 +26,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('zone_topic', default_value='/cleaning_zone'),
         DeclareLaunchArgument('state_topic', default_value='/coverage/state'),
+        DeclareLaunchArgument('enable_monitor', default_value='true'),
+        DeclareLaunchArgument('monitor_profile', default_value='2d'),
         DeclareLaunchArgument('behavior_tree', default_value=default_behavior_tree),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('map', default_value=default_map),
@@ -45,16 +47,20 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_static_base_link_to_laser_tf', default_value='true'),
         DeclareLaunchArgument(
             'enable_static_base_footprint_to_base_link_tf', default_value='true'),
-        DeclareLaunchArgument('enable_static_base_link_to_imu_link_tf', default_value='false'),
+        DeclareLaunchArgument('enable_static_base_link_to_imu_link_tf', default_value='true'),
         DeclareLaunchArgument(
             'enable_coverage_server', default_value='true',
             description='Start opennav_coverage server (falseでbridge単体起動)',
         ),
         DeclareLaunchArgument(
+            'enable_ble', default_value='false',
+            description='Start the same BlueZ JSON receiver as production',
+        ),
+        DeclareLaunchArgument(
             'use_rviz', default_value='true',
             description='Whether to start RViz with coverage.rviz',
         ),
-        LogInfo(msg='[coverage] starting coverage_server + bridge...'),
+        LogInfo(msg='[coverage] starting coverage_server + BLE + bridge...'),
         # mirs_launchは機体・センサー・TFを起動し、Nav2/SLAM/RVizは起動しない。
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -91,7 +97,7 @@ def generate_launch_description():
             name='coverage_server',
             output='screen',
             parameters=[
-                nav2_params,
+                LaunchConfiguration('nav2_params_file'),
                 {'use_sim_time': LaunchConfiguration('use_sim_time')},
             ],
             condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
@@ -110,6 +116,22 @@ def generate_launch_description():
             }],
             condition=IfCondition(LaunchConfiguration('enable_coverage_server')),
         ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare('ble_server'), 'launch',
+                    'ble_receiver.launch.py',
+                ])
+            ),
+            launch_arguments={
+                'enabled': 'true',
+                'default_frame_id': 'map',
+                'cleaning_zone_topic': LaunchConfiguration('zone_topic'),
+                'initial_pose_topic': '/initialpose',
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
+            }.items(),
+            condition=IfCondition(LaunchConfiguration('enable_ble')),
+        ),
         Node(
             package='coverage',
             executable='coverage_bridge',
@@ -122,6 +144,19 @@ def generate_launch_description():
                 'frame_id': 'map',
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
             }],
+        ),
+        # enable_monitor=trueのとき1.0s周期でtopic・TF診断を発行する。
+        Node(
+            package='coverage',
+            executable='coverage_monitor',
+            name='coverage_monitor',
+            output='screen',
+            parameters=[{
+                'profile': LaunchConfiguration('monitor_profile'),
+                'zone_topic': LaunchConfiguration('zone_topic'),
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
+            }],
+            condition=IfCondition(LaunchConfiguration('enable_monitor')),
         ),
         # use_rviz=trueのときcoverage確認用設定でRVizを起動する。
         Node(

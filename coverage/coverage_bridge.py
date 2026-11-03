@@ -14,10 +14,13 @@ from typing import Any
 
 import rclpy
 from action_msgs.msg import GoalStatus
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Point32, Polygon, PolygonStamped
 from nav_msgs.msg import OccupancyGrid
 from opennav_coverage_msgs.action import NavigateCompleteCoverage
 from rclpy.action import ActionClient
+from rclpy.clock import Clock
+from rclpy.clock_type import ClockType
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -109,9 +112,31 @@ class CoverageBridge(Node):
         self._sync_retry_params()
         # 同一state文字列の連続publishを抑止する。
         self._last_state = ''
+        self._phase = 'IDLE'
+        self._phase_reason = 'waiting for cleaning_zone'
+        self._zone_vertices = 0
+        self._zone_received_at: float | None = None
+        self._occupancy_check = 'NOT_RUN'
+        self._occupied_ratio: float | None = None
+        self._unknown_ratio: float | None = None
+        self._occupancy_limit: float | None = None
+        self._goal_id = ''
+        self._last_nav_error_code: int | None = None
+        self._feedback_received_at: float | None = None
+        self._remaining_distance: float | None = None
+        self._recoveries = 0
 
         # state通知はQoS depth 10でpublishする。
         self._state_pub = self.create_publisher(String, self._state_topic, 10)
+        phase_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self._phase_pub = self.create_publisher(
+            String, '/coverage/phase', phase_qos)
+        self._diagnostics_pub = self.create_publisher(
+            DiagnosticArray, '/diagnostics', 10)
         # 入力ゾーンをQoS depth 10で受信する。
         self.create_subscription(
             PolygonStamped, self._zone_topic, self._on_zone, 10
@@ -132,6 +157,11 @@ class CoverageBridge(Node):
         )
         # 保留ゾーンを1.0s周期で再送可能か確認する。
         self.create_timer(1.0, self._on_retry_timer)
+        # 診断はGazebo停止中も1.0s周期で更新する。
+        self.create_timer(
+            1.0, self._publish_diagnostics,
+            clock=Clock(clock_type=ClockType.STEADY_TIME))
+        self._set_phase('IDLE', 'waiting for cleaning_zone')
 
         self.get_logger().info(
             f'coverage_bridge started: zone={self._zone_topic} '
@@ -171,6 +201,77 @@ class CoverageBridge(Node):
         msg.data = text
         self._state_pub.publish(msg)
 
+    def _set_phase(self, phase: str, reason: str = '') -> None:
+        """最新の処理段階を保持し、変化時に/coverage/phaseへ通知する。"""
+        with self._lock:
+            changed = phase != self._phase
+            self._phase = phase
+            self._phase_reason = reason
+        if changed or phase == 'IDLE':
+            msg = String()
+            msg.data = phase
+            self._phase_pub.publish(msg)
+
+    def _publish_diagnostics(self) -> None:
+        """bridge内部の判定値とgoal段階を/diagnosticsへ1.0s周期で出す。"""
+        with self._lock:
+            phase = self._phase
+            reason = self._phase_reason
+            vertices = self._zone_vertices
+            received_at = self._zone_received_at
+            occupancy_check = self._occupancy_check
+            occupied_ratio = self._occupied_ratio
+            unknown_ratio = self._unknown_ratio
+            occupancy_limit = self._occupancy_limit
+            goal_id = self._goal_id
+            last_nav_error_code = self._last_nav_error_code
+            feedback_received_at = self._feedback_received_at
+            remaining_distance = self._remaining_distance
+            recoveries = self._recoveries
+            pending = self._pending_zone is not None
+            failures = self._retry.failures
+            retry_limit = self._retry.limit
+        status = DiagnosticStatus()
+        status.name = 'coverage/bridge'
+        status.hardware_id = 'coverage'
+        status.level = (
+            DiagnosticStatus.ERROR if phase in ('INVALID_ZONE', 'FAILED')
+            else DiagnosticStatus.WARN if phase in ('WAITING_NAV_SERVER', 'RETRYING')
+            else DiagnosticStatus.OK)
+        status.message = f'{phase}: {reason}' if reason else phase
+        values = {
+            'phase': phase,
+            'reason': reason,
+            'zone_vertices': vertices,
+            'zone_age_wall_sec': (
+                f'{time.monotonic() - received_at:.1f}'
+                if received_at is not None else 'never'),
+            'occupancy_check': occupancy_check,
+            'occupied_ratio': (
+                f'{occupied_ratio:.4f}' if occupied_ratio is not None else 'unknown'),
+            'unknown_ratio': (
+                f'{unknown_ratio:.4f}' if unknown_ratio is not None else 'unknown'),
+            'max_occupied_ratio': (
+                f'{occupancy_limit:.4f}' if occupancy_limit is not None else 'unknown'),
+            'goal_id': goal_id or 'none',
+            'last_nav_error_code': (
+                last_nav_error_code if last_nav_error_code is not None else 'unknown'),
+            'feedback_age_wall_sec': (
+                f'{time.monotonic() - feedback_received_at:.1f}'
+                if feedback_received_at is not None else 'never'),
+            'distance_remaining_m': (
+                f'{remaining_distance:.2f}'
+                if remaining_distance is not None else 'unknown'),
+            'number_of_recoveries': recoveries,
+            'pending_zone': str(pending).lower(),
+            'retry_failures': f'{failures}/{retry_limit}',
+        }
+        status.values = [KeyValue(key=k, value=str(v)) for k, v in values.items()]
+        msg = DiagnosticArray()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.status = [status]
+        self._diagnostics_pub.publish(msg)
+
     def _on_map(self, msg: OccupancyGrid) -> None:
         """事前検証用に最新の地図を保持する。"""
         with self._lock:
@@ -181,6 +282,8 @@ class CoverageBridge(Node):
         with self._lock:
             grid = self._latest_map
         if grid is None:
+            with self._lock:
+                self._occupancy_check = 'NO_MAP'
             self.get_logger().warn(
                 '地図未受信のため占有検証を省略します',
                 throttle_duration_sec=10.0,
@@ -193,9 +296,16 @@ class CoverageBridge(Node):
             grid.data, zone.points,
         )
         if occ.inside_cells == 0:
+            with self._lock:
+                self._occupancy_check = 'OUTSIDE_MAP'
             self.get_logger().warn('ゾーンが地図範囲外のため占有検証を省略します')
             return False
         limit = self._float_param('max_occupied_ratio', 0.05)
+        with self._lock:
+            self._occupancy_check = 'CHECKED'
+            self._occupied_ratio = occ.occupied_ratio
+            self._unknown_ratio = occ.unknown_ratio
+            self._occupancy_limit = limit
         self.get_logger().info(
             f'ゾーン内占有率: {occ.occupied_ratio:.3f} '
             f'(unknown: {occ.unknown_ratio:.3f}, 上限: {limit:.3f})'
@@ -204,6 +314,14 @@ class CoverageBridge(Node):
 
     def _on_zone(self, msg: PolygonStamped) -> None:
         """受信ゾーンを検証し、Nav2へ最新の実行要求を送る。"""
+        with self._lock:
+            self._zone_received_at = time.monotonic()
+            self._zone_vertices = len(msg.polygon.points)
+            self._occupancy_check = 'NOT_RUN'
+            self._occupied_ratio = None
+            self._unknown_ratio = None
+            self._occupancy_limit = None
+        self._set_phase('ZONE_RECEIVED', 'validating polygon')
         min_vertices = self._int_param('min_vertices', 3)
         try:
             zone = NormalizedZone.from_points(
@@ -212,21 +330,32 @@ class CoverageBridge(Node):
                 min_vertices=min_vertices,
             )
         except ValueError as e:
+            self._set_phase('INVALID_ZONE', str(e))
             self.get_logger().error(f'不正なゾーンのため無視します: {e}')
             self._publish_state(STATE_FAILED_INVALID_ZONE)
             return
         if self._bool_param('check_map_occupancy', True):
             if self._zone_blocked_by_static_obstacles(zone):
+                self._set_phase('INVALID_ZONE', 'occupied ratio exceeds limit')
                 self.get_logger().error(
                     'ゾーン内に静的障害物が多いため無視します'
                 )
                 self._publish_state(STATE_FAILED_INVALID_ZONE)
                 return
+        else:
+            with self._lock:
+                self._occupancy_check = 'DISABLED'
         self._cancel_current_goal()
         with self._lock:
             self._pending_zone = zone
+            self._goal_id = ''
+            self._last_nav_error_code = None
+            self._feedback_received_at = None
+            self._remaining_distance = None
+            self._recoveries = 0
         self._sync_retry_params()
         self._retry.reset()
+        self._set_phase('ZONE_READY', 'polygon accepted for goal submission')
         self._try_send(zone)
 
     def _on_retry_timer(self) -> None:
@@ -285,11 +414,19 @@ class CoverageBridge(Node):
                 throttle_duration_sec=10.0,
             )
             self._publish_state(STATE_WAITING_NAV_SERVER)
+            self._set_phase('WAITING_NAV_SERVER', 'action server unavailable')
             return
         with self._lock:
             self._generation += 1
             gen = self._generation
             self._executing = True
+            self._goal_handle = None
+            self._goal_id = ''
+            self._last_nav_error_code = None
+            self._feedback_received_at = None
+            self._remaining_distance = None
+            self._recoveries = 0
+        self._set_phase('GOAL_REQUESTED', 'waiting for action response')
         send_future = self._nav_client.send_goal_async(
             self._make_goal(zone),
             feedback_callback=functools.partial(self._on_feedback, gen),
@@ -306,6 +443,10 @@ class CoverageBridge(Node):
         if self._stale(gen):
             return
         remaining = msg.feedback.distance_remaining
+        with self._lock:
+            self._feedback_received_at = time.monotonic()
+            self._remaining_distance = remaining
+            self._recoveries = msg.feedback.number_of_recoveries
         self.get_logger().info(
             f'清掃中: 残り約{remaining:.1f}m '
             f'(recoveries={msg.feedback.number_of_recoveries})',
@@ -322,26 +463,36 @@ class CoverageBridge(Node):
             self.get_logger().error(f'ゴール送信エラー: {e}')
             with self._lock:
                 self._executing = False
-            self._publish_state(STATE_FAILED)
+            self._register_setback(
+                goal_rejected=False, reason=f'goal send error: {e}')
             return
         if handle is None or not handle.accepted:
+            with self._lock:
+                self._executing = False
             self._register_setback(goal_rejected=True)
             return
         with self._lock:
             self._goal_handle = handle
+            self._goal_id = bytes(handle.goal_id.uuid).hex()
+        self._set_phase('GOAL_ACCEPTED', 'Nav2 action accepted')
         result_future = handle.get_result_async()
         result_future.add_done_callback(functools.partial(self._on_nav_result, gen))
 
-    def _register_setback(self, goal_rejected: bool) -> None:
+    def _register_setback(self, goal_rejected: bool, reason: str = '') -> None:
         """拒否・実行失敗を計数し、上限到達で諦めてterminal状態を通知する。
 
         受理時のリセットは行わない。受理後に失敗が続けば上限で諦める。
         """
         self._sync_retry_params()
         give_up = self._retry.record_failure(time.monotonic())
+        detail = reason or (
+            'Nav2 rejected goal' if goal_rejected else 'Nav2 execution failed')
         if give_up:
             with self._lock:
                 self._pending_zone = None
+            self._set_phase('FAILED', detail)
+        else:
+            self._set_phase('RETRYING', detail)
         if goal_rejected:
             count, limit = self._retry.failures, self._retry.limit
             if give_up:
@@ -379,23 +530,36 @@ class CoverageBridge(Node):
         with self._lock:
             self._executing = False
         try:
-            status = future.result().status
+            action_result = future.result()
+            status = action_result.status
+            error_code = action_result.result.error_code
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f'Nav2実行エラー: {e}')
-            self._publish_state(STATE_FAILED)
+            self._register_setback(
+                goal_rejected=False, reason=f'Nav2 result error: {e}')
             return
+        with self._lock:
+            self._last_nav_error_code = error_code
         if status == GoalStatus.STATUS_SUCCEEDED:
+            self._set_phase('DONE', 'Nav2 action succeeded')
             self.get_logger().info('清掃完了(DONE)')
             self._publish_state(STATE_DONE)
             with self._lock:
                 self._pending_zone = None
             self._retry.reset()
         elif status == GoalStatus.STATUS_CANCELED:
+            self._set_phase('CANCELED', 'Nav2 action canceled')
             self.get_logger().info('清掃キャンセル(CANCELED)')
+            with self._lock:
+                self._pending_zone = None
+                self._goal_handle = None
             self._publish_state(STATE_CANCELED)
         else:
-            self.get_logger().error(f'清掃失敗(status={status})')
-            self._register_setback(goal_rejected=False)
+            self.get_logger().error(
+                f'清掃失敗(status={status}, error_code={error_code})')
+            self._register_setback(
+                goal_rejected=False,
+                reason=f'Nav2 action status={status}, error_code={error_code}')
 
 
 def main(args=None) -> None:

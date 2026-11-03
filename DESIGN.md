@@ -39,6 +39,8 @@ Fields2Coverベース) に引き渡す。
 | 購読 | `/cleaning_zone` | `PolygonStamped`, QoS depth 10 |
 | 購読 | `/map` | `OccupancyGrid`, transient local。静的障害物の事前検証用 |
 | 公開 | `/coverage/state` | `std_msgs/String` (`DONE` / `CANCELED` / `FAILED` / `FAILED_INVALID_ZONE` / `FAILED_REJECTED` / `WAITING_NAV_SERVER` / `WAITING_NAV_RETRY n/m`) |
+| 公開 | `/coverage/phase` | `std_msgs/String`, transient local。最新リクエストの処理段階 |
+| 公開 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray`。bridgeの占有率・goal情報とmonitorのtopic実時間Hz・TF |
 | 送出 | `navigate_complete_coverage` | `opennav_coverage_msgs/NavigateCompleteCoverage` |
 | 可視化 | `/coverage_server/coverage_plan` | `nav_msgs/Path` (RViz緑) |
 | 可視化 | `/coverage_server/field_boundary` | `PolygonStamped` (RViz緑) |

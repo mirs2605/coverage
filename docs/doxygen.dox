@@ -1,0 +1,81 @@
+/** @mainpage coverage
+
+指定された清掃範囲を検証し、Nav2のカバレッジ走行へ渡す。処理段階、失敗、再試行とセンサの状態を監視する。経路の生成はOpenNav Coverageに依頼する。
+
+各ファイルの説明からソースと宣言を参照できる。C/C++・Arduino・Python・JavaはDoxygenで解析する。Dart・Kotlin・ROS型定義・シェルはソース掲載ページを使う。コメントのない関数も一覧に含むが、その動作が説明済みという意味ではない。
+
+@section source_list ファイル一覧
+
+- @ref coverage/__init__.py "coverage/__init__.py"
+
+- @ref coverage/coverage_bridge.py "coverage/coverage_bridge.py"
+
+- @ref coverage/coverage_monitor.py "coverage/coverage_monitor.py"
+
+- @ref coverage/retry_policy.py "coverage/retry_policy.py"
+
+- @ref coverage/zone_field.py "coverage/zone_field.py"
+
+- @ref coverage/zone_map.py "coverage/zone_map.py"
+
+- @ref launch/coverage.launch.py "launch/coverage.launch.py"
+
+- @ref launch/production.launch.py "launch/production.launch.py"
+
+- @ref setup.py "setup.py"
+
+- @ref test/test_retry_policy.py "test/test_retry_policy.py"
+
+- @ref test/test_zone_field.py "test/test_zone_field.py"
+
+- @ref test/test_zone_map.py "test/test_zone_map.py"
+
+*/
+
+/** @file coverage/__init__.py
+ * @brief BLE清掃ゾーンをNav2完全カバレージへ接続するROS 2パッケージ。
+ */
+
+/** @file coverage/coverage_bridge.py
+ * @brief cleaning_zoneをNavigateCompleteCoverageアクションへ中継するROS 2ノード。
+ */
+
+/** @file coverage/coverage_monitor.py
+ * @brief 清掃ナビゲーションの入力、計画、速度指令とTFを診断情報へ集約する。
+ */
+
+/** @file coverage/retry_policy.py
+ * @brief Nav2ゴール再送の連続失敗計数と待機時刻をROS非依存で管理する。
+ */
+
+/** @file coverage/zone_field.py
+ * @brief 清掃ゾーンの点列をROSメッセージに依存せず検証・正規化する。
+ */
+
+/** @file coverage/zone_map.py
+ * @brief 清掃ゾーン内セルの地図占有率をROS非依存で求める。
+ */
+
+/** @file launch/coverage.launch.py
+ * @brief Nav2本体起動済み環境でcoverage_server、BLE受信、bridge、RVizを起動する。
+ */
+
+/** @file launch/production.launch.py
+ * @brief MIRS車体、Nav2、coverage server、BLE受信、bridgeをまとめて起動する。
+ */
+
+/** @file setup.py
+ * @brief PythonのROSパッケージと実行コマンドの登録情報を定義する。
+ */
+
+/** @file test/test_retry_policy.py
+ * @brief 連続失敗計数と再送待機の判定を検証する（ROS不要）。
+ */
+
+/** @file test/test_zone_field.py
+ * @brief zone_fieldの座標検証と正規化の契約を検証する。
+ */
+
+/** @file test/test_zone_map.py
+ * @brief ゾーン内セルの地図占有率計算を検証する（ROS不要）。
+ */
