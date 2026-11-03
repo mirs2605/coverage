@@ -44,6 +44,7 @@ THREE_D_TOPICS = {
     '/odometry/filtered': (Odometry, 2.0),
 }
 STAMP_TOPICS = {'/scan', '/scan_raw', '/points', '/points_icp_filtered',
+                '/ground_segmentation/obstacle_points',
                 '/points_assembled_icp', '/odometry/filtered',
                 '/localization_pose', '/odom', '/imu/data_raw',
                 '/wheel/odometry', '/imu/data_fusion'}
@@ -92,6 +93,11 @@ class CoverageMonitor(Node):
             topics[zone_topic] = topics.pop('/cleaning_zone')
             if profile == '3d':
                 topics.update(THREE_D_TOPICS)
+        # 3D走行と位置推定診断は、GSeg3Dの非地面点群を照合に使う。
+        if profile == '3d' or (profile == 'sensor' and stage == 'localization'):
+            topics.pop('/points_icp_filtered', None)
+            topics.pop('/points_assembled_icp', None)
+            topics['/ground_segmentation/obstacle_points'] = (PointCloud2, 15.0)
         self._samples = {topic: deque(maxlen=600) for topic in topics}
         self._last_seen = {topic: None for topic in topics}
         self._thresholds = {topic: threshold for topic, (_, threshold) in topics.items()}
