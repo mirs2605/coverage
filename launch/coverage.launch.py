@@ -15,7 +15,7 @@ def generate_launch_description():
     """選択可能なcoverage server、bridge、RVizのlaunch記述を返す。"""
     mirs_share = FindPackageShare('mirs')
     coverage_share = FindPackageShare('coverage')
-    default_map = PathJoinSubstitution([mirs_share, 'maps', 'youkanato.yaml'])
+    default_map = PathJoinSubstitution([mirs_share, 'maps', 'es.yaml'])
     nav2_params = PathJoinSubstitution(
         [mirs_share, 'config', 'navigation', 'nav2_params.yaml'])
     ekf_config_file = PathJoinSubstitution(

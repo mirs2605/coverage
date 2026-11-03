@@ -21,7 +21,7 @@ def generate_launch_description():
     mirs_share = FindPackageShare('mirs')
     coverage_share = FindPackageShare('coverage')
 
-    default_map = PathJoinSubstitution([mirs_share, 'maps', 'youkanato.yaml'])
+    default_map = PathJoinSubstitution([mirs_share, 'maps', 'es.yaml'])
     ekf_config_file = PathJoinSubstitution(
         [mirs_share, 'config', 'ekf', 'ekf_params.yaml'])
     nav2_params = PathJoinSubstitution(
